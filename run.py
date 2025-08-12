@@ -504,12 +504,11 @@ def main() -> None:
         api_base=args.backend_url,
         api_key=os.getenv("OPENAI_API_KEY", "not-needed"),
         system_message=SYSTEM_IRAKI,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        timeout=90,
-        max_tokens=args.max_tokens,
-        num_retries_failed_request=3,
-        max_retries_invalid_data=2,
+        temperature=0.1,
+        top_p=0.9,
+        timeout=120,
+        max_retries_invalid_data=5,  # <- nudge model to fix bad JSON once or twice
+        num_retries_failed_request=5,  # <- network/transient safety
         output_language="en",
     )
 
