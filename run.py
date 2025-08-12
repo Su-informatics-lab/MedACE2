@@ -1,11 +1,51 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-MedACE | ContextGem note-level extraction for ICI drugs & irAKI context (Parquet-only).
+MedACE – Minimal Concept Extraction (no SaT, no chunking)
 
-Input parquet schema (DelPHEA v3):
-  SERVICE_NAME, PHYSIOLOGIC_TIME, OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID, REPORT_TEXT
+Extracts three concept families from DelPHEA v3 parquet clinical notes:
+  1) ICI Drug Exposure
+  2) AKI Mention
+  3) AKI Attribution (clinician reasoning/stance)
 
-todos:
-  - change online rxnorm api to a local one.
+Design goals:
+  - YAGNI: no sentence segmentation / SaT, no chunking
+  - Fail soft per note; keep the job moving
+  - Stable Parquet schemas; periodic checkpoints
+  - Quiet logs via ContextGem’s native logger control
+
+Environment / logging:
+  - Set CONTEXTGEM_LOGGER_LEVEL to control verbosity.
+    e.g., ERROR (default), or OFF to silence all ContextGem logs.
+
+Per-note flow:
+  ┌───────────────────────────────────────────────────────────┐
+  │ Load single note text                                     │
+  ├───────────────────────────────────────────────────────────┤
+  │ Build ContextGem Document (whole note, add_references=False)
+  │   ├─ ICI Drug Exposure
+  │   ├─ AKI Mention
+  │   └─ AKI Attribution (stance + brief rationale)
+  ├───────────────────────────────────────────────────────────┤
+  │ LLM extract_all (single pass)                             │
+  │   └─ on failure → record empty concepts (soft fail)       │
+  ├───────────────────────────────────────────────────────────┤
+  │ Post-process                                              │
+  │   ├─ Normalize drug names; optional vocab filter (ICI)    │
+  │   └─ Optional RxNorm lookup for missing rxcui             │
+  ├───────────────────────────────────────────────────────────┤
+  │ Append rows; checkpoint every N notes                     │
+  └───────────────────────────────────────────────────────────┘
+
+Outputs (Parquet):
+  - out/drug_mentions.parquet
+      patient_id, encounter_id, note_id, note_date, note_type,
+      drug_text, normalized_name, canonical_generic, class,
+      rxcui, dose_text, route_text, when_text
+
+  - out/note_concepts.parquet
+      patient_id, encounter_id, note_id, note_date, note_type,
+      n_drug_exposures, n_aki_mentions, n_attributions, concepts_json
 """
 
 from __future__ import annotations
@@ -14,28 +54,38 @@ import argparse
 import json
 import logging
 import os
-import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+# quiet ContextGem before importing it
+os.environ.setdefault("CONTEXTGEM_LOGGER_LEVEL", "ERROR")
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from contextgem import Document, DocumentLLM, JsonObjectConcept, JsonObjectExample
+
+# import ContextGem AFTER setting logging env
+from contextgem import (
+    Document,
+    DocumentLLM,
+    JsonObjectConcept,
+    JsonObjectExample,
+    reload_logger_settings,
+)
 from tqdm import tqdm
 
-from src.prompts import SYSTEM_IRAKI  # clinical steering text
+from src.prompts import SYSTEM_IRAKI
 from src.rxnorm import resolve_rxcui
 from src.vocab import load_vocab, normalize_name
 
-# ----------------------------- logging controls -----------------------------
+# ----------------------------- logging (quiet) ------------------------------
 
 
 def _setup_logging(level: str = "ERROR") -> None:
-    # quiet noisy libs; keep our own prints/tqdm
+    """Set Python logging level for local modules; ContextGem uses its own env."""
     lvl = getattr(logging, level.upper(), logging.ERROR)
     logging.basicConfig(level=lvl)
-    for name in ("contextgem", "wtpsplit_lite", "httpx", "urllib3"):
+    for name in ("httpx", "urllib3"):
         logging.getLogger(name).setLevel(lvl)
 
 
@@ -43,16 +93,18 @@ def _setup_logging(level: str = "ERROR") -> None:
 
 
 def _normalize_model_id(m: str) -> str:
+    """Ensure 'org/model' form to align with vLLM OpenAI router."""
     m = (m or "").strip()
     return m if "/" in m else f"openai/{m}"
 
 
 def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
-    """
-    read DelPHEA v3 parquet and coerce types BEFORE pandas sees them:
-      - SERVICE_NAME, REPORT_TEXT -> string
-      - PHYSIOLOGIC_TIME -> timestamp (seconds)
-      - OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID -> string (avoid float)
+    """Read DelPHEA v3 parquet with schema coercion before pandas.
+
+    Returns:
+        DataFrame with columns coerced to:
+          SERVICE_NAME(str), PHYSIOLOGIC_TIME(timestamp[s]),
+          OBFUSCATED_GLOBAL_PERSON_ID(str), ENCOUNTER_ID(str), REPORT_TEXT(str)
     """
     t = pq.read_table(path)
     target = pa.schema(
@@ -72,7 +124,7 @@ def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
 
 
 def _to_int64_from_str(series: pd.Series) -> pd.Series:
-    """convert string-ish ids like '1168...000000000000' or '1.168e+15' to pandas Int64 safely."""
+    """Convert string/float-ish IDs to pandas Int64 safely."""
 
     def conv(x):
         if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -99,6 +151,7 @@ def _to_int64_from_str(series: pd.Series) -> pd.Series:
 
 
 def _clean_str(x: Any) -> str:
+    """Normalize None/NaN/Nullish to empty string; strip whitespace."""
     s = "" if x is None else str(x)
     s = s.strip()
     if s.lower() in {"none", "nan", "null"}:
@@ -107,6 +160,7 @@ def _clean_str(x: Any) -> str:
 
 
 def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
+    """Load and normalize DelPHEA v3 parquet for extraction."""
     base = os.path.basename(path)
     df = _read_v3_parquet_coerced(path).copy()
 
@@ -142,10 +196,11 @@ def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
     return df[keep]
 
 
-# --------------------------- concept + flattening ---------------------------
+# --------------------------- concepts (no references) -----------------------
 
 
-def _make_examples_for_drug() -> List[JsonObjectExample]:
+def _examples_drug() -> List[JsonObjectExample]:
+    """Few-shot examples for drug exposure concept."""
     return [
         JsonObjectExample(
             content={
@@ -155,7 +210,6 @@ def _make_examples_for_drug() -> List[JsonObjectExample]:
                 "route": "IV",
                 "date": "2024-06-15",
                 "relative_time": None,
-                "sentence": "Pembrolizumab 200 mg IV q3w given on 2024-06-15.",
                 "rxcui": "1607602",
             }
         ),
@@ -167,14 +221,14 @@ def _make_examples_for_drug() -> List[JsonObjectExample]:
                 "route": None,
                 "date": None,
                 "relative_time": "last month",
-                "sentence": "Started Opdivo last month",
                 "rxcui": "1658841",
             }
         ),
     ]
 
 
-def _make_examples_for_aki_mention() -> List[JsonObjectExample]:
+def _examples_aki() -> List[JsonObjectExample]:
+    """Few-shot examples for AKI mentions."""
     return [
         JsonObjectExample(
             content={
@@ -186,25 +240,28 @@ def _make_examples_for_aki_mention() -> List[JsonObjectExample]:
     ]
 
 
-def _make_examples_for_attr() -> List[JsonObjectExample]:
+def _examples_attr() -> List[JsonObjectExample]:
+    """Few-shot examples for attribution/stance."""
     return [
         JsonObjectExample(
             content={
                 "stance": "likely ICI-related",
                 "drug_name": "pembrolizumab",
-                "sentences": [
-                    "Temporal association with pembrolizumab initiation.",
-                    "Urinalysis bland; eosinophilia present.",
-                ],
-                "rationale": "Timing and labs consistent with AIN from PD-1 inhibitor.",
+                "rationale": "Temporal association; bland UA; eosinophilia.",
             }
         ),
         JsonObjectExample(
             content={
                 "stance": "unlikely ICI-related",
                 "drug_name": None,
-                "sentences": ["Sepsis and hypotension at AKI onset."],
-                "rationale": "Prerenal/ATN pattern more likely.",
+                "rationale": "Sepsis with hypotension and ATN pattern.",
+            }
+        ),
+        JsonObjectExample(
+            content={
+                "stance": "uncertain",
+                "drug_name": "nivolumab",
+                "rationale": "Timing plausible but concomitant nephrotoxins.",
             }
         ),
     ]
@@ -213,13 +270,14 @@ def _make_examples_for_attr() -> List[JsonObjectExample]:
 def _concepts_for_note(
     allowed_names_for_hint: Optional[List[str]] = None,
 ) -> List[JsonObjectConcept]:
-    # brief but explicit guidance + examples; always return [] if none
+    """Define the three minimal concepts without sentence references (no SaT)."""
     hint_list = (allowed_names_for_hint or [])[:30]
     allow_hint = (
         f" Only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
         if hint_list
         else " Only keep if the drug is an ICI."
     )
+
     drug_concept = JsonObjectConcept(
         name="ICI Drug Exposure",
         description=(
@@ -233,159 +291,35 @@ def _concepts_for_note(
             "route": str | None,
             "date": str | None,
             "relative_time": str | None,
-            "sentence": str,
             "rxcui": str | None,
         },
-        add_references=True,
-        reference_depth="sentences",
-        examples=_make_examples_for_drug(),
+        add_references=False,  # <- no sentence refs => no SaT usage
+        examples=_examples_drug(),
     )
+
     aki_concept = JsonObjectConcept(
         name="AKI Mention",
         description=(
-            "Sentences mentioning acute kidney injury (AKI) and any onset date/timeframe. "
+            "Extract mentions of acute kidney injury and onset date/timeframe if present. "
             "Return an empty list if none."
         ),
         structure={"sentence": str, "onset_date": str | None},
-        add_references=True,
-        reference_depth="sentences",
-        examples=_make_examples_for_aki_mention(),
+        add_references=False,
+        examples=_examples_aki(),
     )
+
     attrib_concept = JsonObjectConcept(
         name="AKI Attribution",
         description=(
-            "Clinician stance that AKI is caused by ICI, ruled out, or uncertain; include brief rationale and citations. "
-            "Return an empty list if none."
+            "Clinician stance whether AKI is ICI-related, ruled out, or uncertain, "
+            "plus a brief rationale. Return an empty list if none."
         ),
-        structure={
-            "stance": str,
-            "drug_name": str | None,
-            "sentences": list[str],
-            "rationale": str | None,
-        },
-        add_references=True,
-        reference_depth="sentences",
-        examples=_make_examples_for_attr(),
+        structure={"stance": str, "drug_name": str | None, "rationale": str | None},
+        add_references=False,
+        examples=_examples_attr(),
     )
-    alt_cause_concept = JsonObjectConcept(
-        name="Alternative AKI Causes",
-        description=(
-            "Non-ICI AKI causes (e.g., sepsis, contrast, obstruction, nephrotoxins) with evidence sentences. "
-            "Return an empty list if none."
-        ),
-        structure={"cause": str, "sentences": list[str]},
-        add_references=True,
-        reference_depth="sentences",
-    )
-    return [drug_concept, aki_concept, attrib_concept, alt_cause_concept]
 
-
-def _flatten_items(concept: JsonObjectConcept) -> List[dict]:
-    out: List[dict] = []
-    for it in getattr(concept, "extracted_items", []) or []:
-        val = getattr(it, "value", None)
-        refs = getattr(it, "reference_sentences", None)
-        ref_sents = [s.raw_text for s in refs] if refs else []
-        if isinstance(val, dict):
-            if ref_sents and "source_sentences" not in val:
-                val["source_sentences"] = ref_sents
-            out.append(val)
-        elif isinstance(val, str):
-            out.append({"sentence": val, "source_sentences": ref_sents})
-    return out
-
-
-# ------------------------- SaT safety: pre-chunking -------------------------
-
-_BOUNDARIES_RE = re.compile(r"(\n{2,}|(?<=[.!?])\s+)")
-
-
-def _safe_chunk_text(text: str, *, max_chars: int) -> List[str]:
-    """split text into chunks ≤ max_chars on friendly boundaries to avoid SaT chunk asserts."""
-    if not text:
-        return []
-    s = re.sub(r"[ \t]+", " ", text).strip()
-    if len(s) <= max_chars:
-        return [s]
-
-    chunks: List[str] = []
-    cur = []
-    cur_len = 0
-
-    def flush():
-        nonlocal cur, cur_len, chunks
-        if cur:
-            chunks.append("".join(cur).strip())
-            cur, cur_len = [], 0
-
-    for piece in _BOUNDARIES_RE.split(s):
-        if not piece:
-            continue
-        if len(piece) > max_chars:
-            flush()
-            for i in range(0, len(piece), max_chars):
-                chunks.append(piece[i : i + max_chars].strip())
-            continue
-        if cur_len + len(piece) > max_chars:
-            flush()
-        cur.append(piece)
-        cur_len += len(piece)
-    flush()
-    return [c for c in chunks if c]
-
-
-def _extract_from_text_chunks(
-    text: str,
-    llm: DocumentLLM,
-    allowed_keys: List[str],
-    *,
-    max_chars: int,
-    max_items_per_call: int,
-) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
-    """run extraction over pre-chunked text and merge results. robust to SaT asserts."""
-    all_drug: List[dict] = []
-    all_aki: List[dict] = []
-    all_attr: List[dict] = []
-    all_alt: List[dict] = []
-
-    # tiered chunk sizes: primary -> retry smaller -> micro-fallback
-    tiers = [max_chars, max(max_chars // 2, 4000), 2000]
-
-    last_err: Optional[Exception] = None
-    for tier in tiers:
-        try:
-            chunks = _safe_chunk_text(text, max_chars=tier)
-            for chunk in chunks:
-                c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
-                    allowed_names_for_hint=allowed_keys
-                )
-                doc = Document(raw_text=chunk)
-                doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
-                # IMPORTANT: raise on invalid JSON so we don't silently drop
-                llm.extract_all(
-                    doc,
-                    overwrite_existing=True,
-                    max_items_per_call=max_items_per_call,
-                    raise_exception_on_extraction_error=True,
-                )
-                all_drug.extend(_flatten_items(c_drug))
-                all_aki.extend(_flatten_items(c_aki))
-                all_attr.extend(_flatten_items(c_attr))
-                all_alt.extend(_flatten_items(c_alt))
-            # success at this tier
-            return all_drug, all_aki, all_attr, all_alt
-        except Exception as e:  # capture JSON validation or API errors
-            last_err = e
-            all_drug.clear()
-            all_aki.clear()
-            all_attr.clear()
-            all_alt.clear()
-            continue
-
-    # all tiers failed
-    if last_err:
-        raise last_err
-    raise AssertionError("SaT/LLM extraction failed after multi-tier chunking")
+    return [drug_concept, aki_concept, attrib_concept]
 
 
 # ------------------------------- save helpers -------------------------------
@@ -404,7 +338,6 @@ DRUG_COLS = [
     "dose_text",
     "route_text",
     "when_text",
-    "sentence",
 ]
 
 NOTE_COLS = [
@@ -413,15 +346,15 @@ NOTE_COLS = [
     "note_id",
     "note_date",
     "note_type",
-    "has_alt_cause",
-    "n_drug_exposures_raw",
     "n_drug_exposures",
     "n_aki_mentions",
+    "n_attributions",
     "concepts_json",
 ]
 
 
 def _atomic_write_parquet(df: pd.DataFrame, path: str) -> None:
+    """Write Parquet atomically (tmp→replace)."""
     tmp = f"{path}.tmp"
     df.to_parquet(tmp, index=False)
     os.replace(tmp, path)
@@ -431,7 +364,7 @@ def _atomic_write_parquet(df: pd.DataFrame, path: str) -> None:
 
 
 def _parse_range(s: Optional[str], n: int) -> Tuple[int, int]:
-    """'start:end' -> (start, end) with end exclusive; handles blanks."""
+    """Parse 'start:end' (end exclusive) with clamping to [0, n]."""
     if not s:
         return 0, n
     parts = s.split(":", 1)
@@ -443,26 +376,20 @@ def _parse_range(s: Optional[str], n: int) -> Tuple[int, int]:
 
 
 def main() -> None:
+    """CLI entrypoint."""
     ap = argparse.ArgumentParser(
-        description="MedACE irAKI concept extraction (ContextGem, parquet-only)"
+        description="MedACE minimal extractor (no SaT, no chunking)"
     )
     ap.add_argument("--notes", required=True, help="path to DelPHEA v3 Parquet notes")
-    ap.add_argument("--outdir", default="out")
+    ap.add_argument("--outdir", default="out", help="output directory")
     ap.add_argument("--debug", action="store_true", help="process first 10 notes only")
     ap.add_argument("--offset", type=int, default=0, help="skip the first N notes")
     ap.add_argument(
-        "--range",
-        type=str,
-        default=None,
-        help="slice as 'START:END' (END exclusive), applied after --offset",
+        "--range", type=str, default=None, help="slice 'START:END' (END exclusive)"
     )
     ap.add_argument("--backend-url", default="http://127.0.0.1:8000/v1")
     ap.add_argument("--model", default="openai/gpt-oss-120b")
-    ap.add_argument(
-        "--drug-vocab",
-        default="resources/ici_vocab.csv",
-        help="csv from vocab builder (defaults to resources/ici_vocab.csv if present)",
-    )
+    ap.add_argument("--drug-vocab", default="resources/ici_vocab.csv")
     ap.add_argument("--filter-ici", action="store_true", help="keep only ICI exposures")
     ap.add_argument(
         "--rxnorm-online",
@@ -470,83 +397,50 @@ def main() -> None:
         help="resolve RxCUI via RxNav if missing",
     )
     ap.add_argument(
-        "--max-chars-per-chunk",
-        type=int,
-        default=8000,
-        help="max characters per chunk for SaT",
-    )
-    ap.add_argument(
-        "--checkpoint-every",
-        type=int,
-        default=50,
-        help="write partial results every N notes (atomic overwrite)",
+        "--checkpoint-every", type=int, default=50, help="write partials every N notes"
     )
     ap.add_argument(
         "--log-level",
         type=str,
         default="ERROR",
-        help="python logging level for libraries (default ERROR)",
+        help="python logging level for our code",
     )
     ap.add_argument(
-        "--max-tokens",
-        type=int,
-        default=1200,
-        help="max completion tokens for extraction responses",
+        "--cg-log-level",
+        type=str,
+        default=None,
+        help="ContextGem logger level: TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL|OFF",
     )
-    ap.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="sampling temperature for extraction",
-    )
-    ap.add_argument(
-        "--top-p",
-        type=float,
-        default=0.2,
-        help="top-p for extraction",
-    )
-    ap.add_argument(
-        "--max-items-per-call",
-        type=int,
-        default=1,
-        help="batch size of concepts per LLM call (1=safer)",
-    )
-    ap.add_argument(
-        "--save-usage",
-        action="store_true",
-        help="dump LLM usage/calls into out/usage.jsonl at checkpoints",
-    )
-    ap.add_argument(
-        "--stop-on-error",
-        action="store_true",
-        help="abort on the first LLM/segmentation error instead of continuing",
-    )
+    ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--top-p", type=float, default=0.2)
+    ap.add_argument("--max-tokens", type=int, default=800)
+    ap.add_argument("--max-items-per-call", type=int, default=1)
     args = ap.parse_args()
-    os.makedirs(args.outdir, exist_ok=True)
+
+    # logging
     _setup_logging(args.log_level)
+    if args.cg_log_level:
+        os.environ["CONTEXTGEM_LOGGER_LEVEL"] = args.cg_log_level
+        reload_logger_settings()
 
+    os.makedirs(args.outdir, exist_ok=True)
+
+    # load notes and slice
     df = _load_notes_delphea_v3(args.notes)
-
-    # selection
     if args.offset > 0:
         df = df.iloc[args.offset :].reset_index(drop=True)
     if args.debug:
         df = df.head(10).copy()
-
-    n = len(df)
-    start, end = _parse_range(args.range, n)
-    if start or end != n:
+    start, end = _parse_range(args.range, len(df))
+    if start or end != len(df):
         df = df.iloc[start:end].reset_index(drop=True)
 
-    # vocab
-    vocab_path = args.drug_vocab or (
-        os.path.join("resources", "ici_vocab.csv")
-        if os.path.exists(os.path.join("resources", "ici_vocab.csv"))
-        else None
-    )
+    # vocab (optional)
+    vocab_path = args.drug_vocab if os.path.exists(args.drug_vocab) else None
     vocab = load_vocab(vocab_path) if vocab_path else None
     allowed_keys = sorted(set(vocab["name_to_canonical"].keys())) if vocab else []
 
+    # LLM
     llm = DocumentLLM(
         model=_normalize_model_id(args.model),
         api_base=args.backend_url,
@@ -554,127 +448,26 @@ def main() -> None:
         system_message=SYSTEM_IRAKI,
         temperature=args.temperature,
         top_p=args.top_p,
-        timeout=120,
+        timeout=90,
         max_tokens=args.max_tokens,
         num_retries_failed_request=3,
-        max_retries_invalid_data=3,
+        max_retries_invalid_data=2,
         output_language="en",
     )
 
     drug_rows: List[Dict[str, Any]] = []
     note_rows: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
 
     pbar = tqdm(df.iterrows(), total=len(df), desc="notes")
     for i, (_, row) in enumerate(pbar, start=1):
         text = _clean_str(row.get("note_text"))
-        placeholder_concepts = {
-            "drug_exposures": [],
-            "aki_mentions": [],
-            "attributions": [],
-            "alt_causes": [],
-        }
 
+        # empty-note fast path
         if not text:
-            note_rows.append(
-                {
-                    "patient_id": row.get("patient_id"),
-                    "encounter_id": row.get("encounter_id"),
-                    "note_id": row.get("note_id"),
-                    "note_date": row.get("note_datetime"),
-                    "note_type": row.get("note_type"),
-                    "has_alt_cause": False,
-                    "n_drug_exposures_raw": 0,
-                    "n_drug_exposures": 0,
-                    "n_aki_mentions": 0,
-                    "concepts_json": json.dumps(
-                        placeholder_concepts, ensure_ascii=False
-                    ),
-                }
-            )
-        else:
-            try:
-                (
-                    drug_items,
-                    aki_items,
-                    attr_items,
-                    alt_items,
-                ) = _extract_from_text_chunks(
-                    text,
-                    llm,
-                    allowed_keys,
-                    max_chars=args.max_chars_per_chunk,
-                    max_items_per_call=args.max_items_per_call,
-                )
-            except Exception as e:
-                # record error + placeholder; optionally stop
-                errors.append(
-                    {
-                        "note_id": row.get("note_id"),
-                        "len": len(text),
-                        "error": repr(e),
-                    }
-                )
-                if args.stop_on_error:
-                    raise
-                drug_items, aki_items, attr_items, alt_items = [], [], [], []
-
-            raw_drug_count = len(drug_items)
-
-            # canonicalize + optional filtering
-            cleaned_drugs: List[Dict[str, Any]] = []
-            for de in drug_items:
-                dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
-                key = normalize_name(dn_raw)
-                canon = vocab["name_to_canonical"].get(key) if vocab else None
-                if (
-                    args.filter_ici
-                    and vocab
-                    and (key not in vocab["name_to_canonical"])
-                    and not canon
-                ):
-                    continue
-
-                rxcui = _clean_str(de.get("rxcui"))
-                if not rxcui and args.rxnorm_online and dn_raw:
-                    try:
-                        rxcui = resolve_rxcui(dn_raw) or ""
-                    except Exception:
-                        rxcui = ""
-
-                cleaned_drugs.append(
-                    {
-                        "patient_id": row.get("patient_id"),
-                        "encounter_id": row.get("encounter_id"),
-                        "note_id": row.get("note_id"),
-                        "note_date": row.get("note_datetime"),
-                        "note_type": row.get("note_type"),
-                        "drug_text": de.get("drug_text"),
-                        "normalized_name": dn_raw or None,
-                        "canonical_generic": canon,
-                        "class": (
-                            (vocab["by_name"].get(key, {}) or {}).get("class")
-                            if vocab
-                            else None
-                        ),
-                        "rxcui": rxcui or None,
-                        "dose_text": _clean_str(de.get("dose")) or None,
-                        "route_text": _clean_str(de.get("route")) or None,
-                        "when_text": _clean_str(
-                            de.get("date") or de.get("relative_time")
-                        )
-                        or None,
-                        "sentence": de.get("sentence")
-                        or (de.get("source_sentences") or [None])[0],
-                    }
-                )
-
-            drug_rows.extend(cleaned_drugs)
             concept_payload = {
-                "drug_exposures": cleaned_drugs,
-                "aki_mentions": aki_items,
-                "attributions": attr_items,
-                "alt_causes": alt_items,
+                "drug_exposures": [],
+                "aki_mentions": [],
+                "attributions": [],
             }
             note_rows.append(
                 {
@@ -683,36 +476,132 @@ def main() -> None:
                     "note_id": row.get("note_id"),
                     "note_date": row.get("note_datetime"),
                     "note_type": row.get("note_type"),
-                    "has_alt_cause": bool(alt_items),
-                    "n_drug_exposures_raw": raw_drug_count,
-                    "n_drug_exposures": len(cleaned_drugs),
-                    "n_aki_mentions": len(aki_items),
+                    "n_drug_exposures": 0,
+                    "n_aki_mentions": 0,
+                    "n_attributions": 0,
                     "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
                 }
             )
+            if args.checkpoint_every and (i % args.checkpoint_every == 0):
+                _atomic_write_parquet(
+                    pd.DataFrame(drug_rows, columns=DRUG_COLS),
+                    os.path.join(args.outdir, "drug_mentions.partial.parquet"),
+                )
+                _atomic_write_parquet(
+                    pd.DataFrame(note_rows, columns=NOTE_COLS),
+                    os.path.join(args.outdir, "note_concepts.partial.parquet"),
+                )
+                pbar.set_postfix_str(f"checkpoint@{i}")
+            continue
 
-        # checkpoint
+        # concepts (no references)
+        c_drug, c_aki, c_attr = _concepts_for_note(allowed_names_for_hint=allowed_keys)
+        doc = Document(raw_text=text)
+        doc.add_concepts([c_drug, c_aki, c_attr])
+
+        # extract; soft-fail per note
+        try:
+            llm.extract_all(
+                doc,
+                overwrite_existing=True,
+                max_items_per_call=args.max_items_per_call,
+                raise_exception_on_extraction_error=True,
+            )
+        except Exception:
+            c_drug.extracted_items = []
+            c_aki.extracted_items = []
+            c_attr.extracted_items = []
+
+        # flatten concept items
+        def _flatten(concept: JsonObjectConcept) -> List[dict]:
+            out: List[dict] = []
+            for it in getattr(concept, "extracted_items", []) or []:
+                val = getattr(it, "value", None)
+                if isinstance(val, dict):
+                    out.append(val)
+            return out
+
+        drug_items = _flatten(c_drug)
+        aki_items = _flatten(c_aki)
+        attr_items = _flatten(c_attr)
+
+        # post-process drugs (normalize, filter, optional RxNorm)
+        cleaned_drugs: List[Dict[str, Any]] = []
+        for de in drug_items:
+            dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
+            key = normalize_name(dn_raw)
+            canon = vocab["name_to_canonical"].get(key) if vocab else None
+            if (
+                args.filter_ici
+                and vocab
+                and (key not in vocab["name_to_canonical"])
+                and not canon
+            ):
+                continue
+
+            rxcui = _clean_str(de.get("rxcui"))
+            if not rxcui and args.rxnorm_online and dn_raw:
+                try:
+                    rxcui = resolve_rxcui(dn_raw) or ""
+                except Exception:
+                    rxcui = ""
+
+            cleaned_drugs.append(
+                {
+                    "patient_id": row.get("patient_id"),
+                    "encounter_id": row.get("encounter_id"),
+                    "note_id": row.get("note_id"),
+                    "note_date": row.get("note_datetime"),
+                    "note_type": row.get("note_type"),
+                    "drug_text": de.get("drug_text"),
+                    "normalized_name": dn_raw or None,
+                    "canonical_generic": canon,
+                    "class": (
+                        (vocab["by_name"].get(key, {}) or {}).get("class")
+                        if vocab
+                        else None
+                    ),
+                    "rxcui": rxcui or None,
+                    "dose_text": _clean_str(de.get("dose")) or None,
+                    "route_text": _clean_str(de.get("route")) or None,
+                    "when_text": _clean_str(de.get("date") or de.get("relative_time"))
+                    or None,
+                }
+            )
+
+        drug_rows.extend(cleaned_drugs)
+        concept_payload = {
+            "drug_exposures": cleaned_drugs,
+            "aki_mentions": aki_items,
+            "attributions": attr_items,
+        }
+        note_rows.append(
+            {
+                "patient_id": row.get("patient_id"),
+                "encounter_id": row.get("encounter_id"),
+                "note_id": row.get("note_id"),
+                "note_date": row.get("note_datetime"),
+                "note_type": row.get("note_type"),
+                "n_drug_exposures": len(cleaned_drugs),
+                "n_aki_mentions": len(aki_items),
+                "n_attributions": len(attr_items),
+                "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
+            }
+        )
+
+        # checkpoints
         if args.checkpoint_every and (i % args.checkpoint_every == 0):
-            df_d = pd.DataFrame(drug_rows, columns=DRUG_COLS)
-            df_n = pd.DataFrame(note_rows, columns=NOTE_COLS)
             _atomic_write_parquet(
-                df_d, os.path.join(args.outdir, "drug_mentions.partial.parquet")
+                pd.DataFrame(drug_rows, columns=DRUG_COLS),
+                os.path.join(args.outdir, "drug_mentions.partial.parquet"),
             )
             _atomic_write_parquet(
-                df_n, os.path.join(args.outdir, "note_concepts.partial.parquet")
+                pd.DataFrame(note_rows, columns=NOTE_COLS),
+                os.path.join(args.outdir, "note_concepts.partial.parquet"),
             )
-            if args.save_usage:
-                usage = llm.get_usage()
-                with open(os.path.join(args.outdir, "usage.jsonl"), "a") as f:
-                    f.write(json.dumps(usage, ensure_ascii=False) + "\n")
-            if errors:
-                with open(os.path.join(args.outdir, "errors.jsonl"), "a") as f:
-                    for rec in errors:
-                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                errors.clear()
             pbar.set_postfix_str(f"checkpoint@{i}")
 
-    # final write (ensure stable schemas even if empty)
+    # final write
     _atomic_write_parquet(
         pd.DataFrame(drug_rows, columns=DRUG_COLS),
         os.path.join(args.outdir, "drug_mentions.parquet"),
@@ -721,10 +610,6 @@ def main() -> None:
         pd.DataFrame(note_rows, columns=NOTE_COLS),
         os.path.join(args.outdir, "note_concepts.parquet"),
     )
-    if errors:
-        with open(os.path.join(args.outdir, "errors.jsonl"), "a") as f:
-            for rec in errors:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(
         f"[OK] wrote {len(drug_rows)} drug rows and {len(note_rows)} note rows to {args.outdir}"
     )
