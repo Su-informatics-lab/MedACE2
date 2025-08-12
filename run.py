@@ -213,7 +213,7 @@ def main() -> None:
     ap.add_argument("--model", default="openai/gpt-oss-120b")
     ap.add_argument(
         "--drug-vocab",
-        default=None,
+        default="resources/ici_vocab.csv",
         help="CSV from vocab builder (defaults to resources/ici_vocab.csv if present)",
     )
     ap.add_argument(
