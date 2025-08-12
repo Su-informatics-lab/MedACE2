@@ -135,11 +135,13 @@ def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
 
 
 def _concepts_for_note(
-    allowed_generic_names: Optional[List[str]] = None,
+    allowed_names_for_hint: Optional[List[str]] = None,
 ) -> List[JsonObjectConcept]:
+    # Show a small, mixed list of synonyms/generics in the hint to bias extraction
+    hint_list = (allowed_names_for_hint or [])[:30]
     allow_hint = (
-        f" Only keep if the drug is an ICI: {', '.join(allowed_generic_names[:30])}…"
-        if allowed_generic_names
+        f" Only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
+        if hint_list
         else " Only keep if the drug is an ICI."
     )
     drug_concept = JsonObjectConcept(
@@ -213,6 +215,9 @@ def main() -> None:
     ap.add_argument("--notes", required=True, help="path to DelPHEA v3 Parquet notes")
     ap.add_argument("--outdir", default="outputs")
     ap.add_argument("--debug", action="store_true", help="process first 10 notes only")
+    ap.add_argument(
+        "--offset", type=int, default=0, help="skip the first N notes before processing"
+    )
     ap.add_argument("--backend-url", default="http://127.0.0.1:8000/v1")
     ap.add_argument("--model", default="openai/gpt-oss-120b")
     ap.add_argument(
@@ -234,27 +239,21 @@ def main() -> None:
     os.makedirs(args.outdir, exist_ok=True)
 
     df = _load_notes_delphea_v3(args.notes)
+    if args.offset > 0:
+        df = df.iloc[args.offset :].reset_index(drop=True)
     if args.debug:
         df = df.head(10).copy()
 
+    # vocab: use full synonym set for hinting; name_to_canonical keys are normalized terms (brands + generics)
     vocab_path = args.drug_vocab or (
         os.path.join("resources", "ici_vocab.csv")
         if os.path.exists(os.path.join("resources", "ici_vocab.csv"))
         else None
     )
     vocab = load_vocab(vocab_path) if vocab_path else None
-    allowed_names = (
-        sorted(
-            {
-                v.get("canonical_generic")
-                for v in (vocab["by_name"].values() if vocab else [])
-                if v.get("canonical_generic")
-            }
-        )
-        if vocab
-        else []
-    )
-    allowed_keys = set(vocab["name_to_canonical"].keys()) if vocab else set()
+    allowed_keys = (
+        sorted(set(vocab["name_to_canonical"].keys())) if vocab else []
+    )  # normalized synonyms/generics
 
     llm = DocumentLLM(
         model=_normalize_model_id(args.model),
@@ -264,7 +263,7 @@ def main() -> None:
         temperature=0.1,
         top_p=1.0,
         timeout=120,
-        max_retries_invalid_data=3,
+        max_retries_invalid_data=3,  # ContextGem validates and retries malformed JSON
         output_language="en",
     )
 
@@ -282,6 +281,7 @@ def main() -> None:
                     "note_date": row.get("note_datetime"),
                     "note_type": row.get("note_type"),
                     "has_alt_cause": False,
+                    "n_drug_exposures_raw": 0,
                     "n_drug_exposures": 0,
                     "n_aki_mentions": 0,
                     "concepts_json": json.dumps(
@@ -298,7 +298,7 @@ def main() -> None:
             continue
 
         c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
-            allowed_generic_names=allowed_names or []
+            allowed_names_for_hint=allowed_keys
         )
         doc = Document(raw_text=text)
         doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
@@ -312,13 +312,20 @@ def main() -> None:
         attr_items = _flatten_items(c_attr)
         alt_items = _flatten_items(c_alt)
 
+        raw_drug_count = len(drug_items)
+
         # canonicalize + optional filtering
         cleaned_drugs: List[Dict[str, Any]] = []
         for de in drug_items:
             dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
             key = normalize_name(dn_raw)
             canon = vocab["name_to_canonical"].get(key) if vocab else None
-            if args.filter_ici and vocab and key not in allowed_keys and not canon:
+            if (
+                args.filter_ici
+                and vocab
+                and (key not in vocab["name_to_canonical"])
+                and not canon
+            ):
                 continue
 
             rxcui = _clean_str(de.get("rxcui"))
@@ -338,9 +345,11 @@ def main() -> None:
                     "drug_text": de.get("drug_text"),
                     "normalized_name": dn_raw or None,
                     "canonical_generic": canon,
-                    "class": (vocab["by_name"].get(key, {}) or {}).get("class")
-                    if vocab
-                    else None,
+                    "class": (
+                        (vocab["by_name"].get(key, {}) or {}).get("class")
+                        if vocab
+                        else None
+                    ),
                     "rxcui": rxcui or None,
                     "dose_text": _clean_str(de.get("dose")) or None,
                     "route_text": _clean_str(de.get("route")) or None,
@@ -366,6 +375,7 @@ def main() -> None:
                 "note_date": row.get("note_datetime"),
                 "note_type": row.get("note_type"),
                 "has_alt_cause": bool(alt_items),
+                "n_drug_exposures_raw": raw_drug_count,
                 "n_drug_exposures": len(cleaned_drugs),
                 "n_aki_mentions": len(aki_items),
                 "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
