@@ -20,7 +20,7 @@ sbatch serve.sbatch
 # run pipeline
 python run.py \
   --notes `the parquet file hosting notes` \
-  --outdir outputs/run1 \
+  --outdir out \
   --backend-url http://127.0.0.1:8000/v1 \
   --model openai/gpt-oss-120b \
   --drug-vocab "resources/ici_vocab.csv" \
