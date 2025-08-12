@@ -1,5 +1,0 @@
-window_days: 60
-chunk_chars: 3500
-max_chunks_per_note: 6
-min_sentence_len: 12
-ici_lexicon_path: data/ici_lexicon.csv
