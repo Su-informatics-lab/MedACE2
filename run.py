@@ -4,8 +4,8 @@ MedACE | ContextGem note-level extraction for ICI drugs & irAKI context (Parquet
 Input parquet schema (DelPHEA v3):
   SERVICE_NAME, PHYSIOLOGIC_TIME, OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID, REPORT_TEXT
 
-Todos:
-  - Change online rxnorm api to a local one.
+todos:
+  - change online rxnorm api to a local one.
 """
 
 from __future__ import annotations
@@ -13,8 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import pyarrow as pa
@@ -34,7 +35,7 @@ def _normalize_model_id(m: str) -> str:
 
 def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
     """
-    Read DelPHEA v3 parquet and coerce types BEFORE pandas sees them:
+    read DelPHEA v3 parquet and coerce types BEFORE pandas sees them:
       - SERVICE_NAME, REPORT_TEXT -> string
       - PHYSIOLOGIC_TIME -> timestamp (seconds)
       - OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID -> string (avoid float)
@@ -57,8 +58,7 @@ def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
 
 
 def _to_int64_from_str(series: pd.Series) -> pd.Series:
-    """Convert string-ish IDs like '1168...000000000000' or '1.168e+15' to pandas Int64
-    safely."""
+    """convert string-ish ids like '1168...000000000000' or '1.168e+15' to pandas Int64 safely."""
 
     def conv(x):
         if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -134,13 +134,13 @@ def _concepts_for_note(
     # show a small, mixed list of synonyms/generics in the hint to bias extraction
     hint_list = (allowed_names_for_hint or [])[:30]
     allow_hint = (
-        f" Only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
+        f" only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
         if hint_list
-        else " Only keep if the drug is an ICI."
+        else " only keep if the drug is an ICI."
     )
     drug_concept = JsonObjectConcept(
         name="ICI Drug Exposure",
-        description="Extract immune checkpoint inhibitor exposures with attributes."
+        description="extract immune checkpoint inhibitor exposures with attributes."
         + allow_hint,
         structure={
             "drug_text": str,
@@ -157,14 +157,14 @@ def _concepts_for_note(
     )
     aki_concept = JsonObjectConcept(
         name="AKI Mention",
-        description="Sentences mentioning acute kidney injury (AKI) and any onset date/timeframe.",
+        description="sentences mentioning acute kidney injury (AKI) and any onset date/timeframe.",
         structure={"sentence": str, "onset_date": str | None},
         add_references=True,
         reference_depth="sentences",
     )
     attrib_concept = JsonObjectConcept(
         name="AKI Attribution",
-        description="Clinician stance that AKI is caused by ICI, ruled out, or uncertain; include brief rationale and citations.",
+        description="clinician stance that AKI is caused by ICI, ruled out, or uncertain; include brief rationale and citations.",
         structure={
             "stance": str,
             "drug_name": str | None,
@@ -176,7 +176,7 @@ def _concepts_for_note(
     )
     alt_cause_concept = JsonObjectConcept(
         name="Alternative AKI Causes",
-        description="Non-ICI AKI causes (e.g., sepsis, contrast, obstruction, nephrotoxins) with evidence sentences.",
+        description="non-ICI AKI causes (e.g., sepsis, contrast, obstruction, nephrotoxins) with evidence sentences.",
         structure={"cause": str, "sentences": list[str]},
         add_references=True,
         reference_depth="sentences",
@@ -199,6 +199,113 @@ def _flatten_items(concept: JsonObjectConcept) -> List[dict]:
     return out
 
 
+# ------------------------- SaT safety: pre-chunking helpers -------------------------
+
+_BOUNDARIES_RE = re.compile(r"(\n{2,}|(?<=[.!?])\s+)")
+
+
+def _safe_chunk_text(text: str, *, max_chars: int = 30000) -> List[str]:
+    """split text into chunks ≤ max_chars on friendly boundaries to avoid SaT chunk asserts.
+
+    strategy:
+      1) normalize whitespace
+      2) if already small, return as-is
+      3) otherwise, accumulate pieces split on double newlines or sentence-like whitespace,
+         flushing to a new chunk when adding the next piece would exceed max_chars
+      4) if any single piece itself exceeds max_chars, hard-split it
+    """
+    if not text:
+        return []
+    s = re.sub(r"[ \t]+", " ", text).strip()
+    if len(s) <= max_chars:
+        return [s]
+
+    chunks: List[str] = []
+    cur = []
+    cur_len = 0
+
+    def flush():
+        nonlocal cur, cur_len, chunks
+        if cur:
+            chunks.append("".join(cur).strip())
+            cur = []
+            cur_len = 0
+
+    for piece in _BOUNDARIES_RE.split(s):
+        if not piece:
+            continue
+        if len(piece) > max_chars:
+            # hard-split oversized piece
+            flush()
+            for i in range(0, len(piece), max_chars):
+                chunks.append(piece[i : i + max_chars].strip())
+            continue
+        if cur_len + len(piece) > max_chars:
+            flush()
+        cur.append(piece)
+        cur_len += len(piece)
+    flush()
+    return [c for c in chunks if c]
+
+
+def _extract_from_text_chunks(
+    text: str,
+    llm: DocumentLLM,
+    allowed_keys: List[str],
+    *,
+    max_chars: int,
+) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
+    """run extraction over pre-chunked text and merge results."""
+    all_drug: List[dict] = []
+    all_aki: List[dict] = []
+    all_attr: List[dict] = []
+    all_alt: List[dict] = []
+
+    # pre-chunk to keep SaT happy
+    chunks = _safe_chunk_text(text, max_chars=max_chars) or []
+    if not chunks:
+        return all_drug, all_aki, all_attr, all_alt
+
+    # prepare concepts once per chunk
+    for chunk in chunks:
+        c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
+            allowed_names_for_hint=allowed_keys
+        )
+        doc = Document(raw_text=chunk)
+        doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
+
+        try:
+            llm.extract_all(
+                doc, overwrite_existing=True, raise_exception_on_extraction_error=False
+            )
+        except AssertionError:
+            # rare SaT internal mismatch; retry with smaller chunks
+            smaller = _safe_chunk_text(chunk, max_chars=max(8000, max_chars // 2))
+            for sub in smaller:
+                sub_c_drug, sub_c_aki, sub_c_attr, sub_c_alt = _concepts_for_note(
+                    allowed_names_for_hint=allowed_keys
+                )
+                sub_doc = Document(raw_text=sub)
+                sub_doc.add_concepts([sub_c_drug, sub_c_aki, sub_c_attr, sub_c_alt])
+                llm.extract_all(
+                    sub_doc,
+                    overwrite_existing=True,
+                    raise_exception_on_extraction_error=False,
+                )
+                all_drug.extend(_flatten_items(sub_c_drug))
+                all_aki.extend(_flatten_items(sub_c_aki))
+                all_attr.extend(_flatten_items(sub_c_attr))
+                all_alt.extend(_flatten_items(sub_c_alt))
+            continue
+
+        all_drug.extend(_flatten_items(c_drug))
+        all_aki.extend(_flatten_items(c_aki))
+        all_attr.extend(_flatten_items(c_attr))
+        all_alt.extend(_flatten_items(c_alt))
+
+    return all_drug, all_aki, all_attr, all_alt
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="MedACE irAKI concept extraction (ContextGem, parquet-only)"
@@ -214,18 +321,23 @@ def main() -> None:
     ap.add_argument(
         "--drug-vocab",
         default="resources/ici_vocab.csv",
-        help="CSV from vocab builder (defaults to resources/ici_vocab.csv if present)",
+        help="csv from vocab builder (defaults to resources/ici_vocab.csv if present)",
     )
     ap.add_argument(
         "--filter-ici",
         action="store_true",
         help="keep only drug exposures that map to vocab",
     )
-    # todo: will change to a local rxnav
     ap.add_argument(
         "--rxnorm-online",
         action="store_true",
         help="resolve RxCUI via RxNav if missing",
+    )
+    ap.add_argument(
+        "--max-chars-per-chunk",
+        type=int,
+        default=30000,
+        help="max characters per chunk to avoid SaT chunking asserts",
     )
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
@@ -236,17 +348,14 @@ def main() -> None:
     if args.debug:
         df = df.head(10).copy()
 
-    # vocab: use full synonym set for hinting;
-    # name_to_canonical keys are normalized terms (brands + generics)
+    # vocab: use full synonym set for hinting; keys are normalized terms (brands + generics)
     vocab_path = args.drug_vocab or (
         os.path.join("resources", "ici_vocab.csv")
         if os.path.exists(os.path.join("resources", "ici_vocab.csv"))
         else None
     )
     vocab = load_vocab(vocab_path) if vocab_path else None
-    allowed_keys = (
-        sorted(set(vocab["name_to_canonical"].keys())) if vocab else []
-    )  # normalized synonyms/generics
+    allowed_keys = sorted(set(vocab["name_to_canonical"].keys())) if vocab else []
 
     llm = DocumentLLM(
         model=_normalize_model_id(args.model),
@@ -256,7 +365,7 @@ def main() -> None:
         temperature=0.1,
         top_p=1.0,
         timeout=120,
-        max_retries_invalid_data=3,  # ContextGem validates and retries malformed JSON
+        max_retries_invalid_data=3,  # contextgem validates and retries malformed json
         output_language="en",
     )
 
@@ -290,20 +399,13 @@ def main() -> None:
             )
             continue
 
-        c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
-            allowed_names_for_hint=allowed_keys
+        # run extraction across safe-sized chunks and merge
+        drug_items, aki_items, attr_items, alt_items = _extract_from_text_chunks(
+            text,
+            llm,
+            allowed_keys,
+            max_chars=args.max_chars_per_chunk,
         )
-        doc = Document(raw_text=text)
-        doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
-
-        llm.extract_all(
-            doc, overwrite_existing=True, raise_exception_on_extraction_error=False
-        )
-
-        drug_items = _flatten_items(c_drug)
-        aki_items = _flatten_items(c_aki)
-        attr_items = _flatten_items(c_attr)
-        alt_items = _flatten_items(c_alt)
 
         raw_drug_count = len(drug_items)
 
@@ -382,7 +484,7 @@ def main() -> None:
         os.path.join(args.outdir, "note_concepts.parquet"), index=False
     )
     print(
-        f"[OK] wrote {len(drug_rows)} drug rows and {len(note_rows)} note rows to {args.outdir}"
+        f"[ok] wrote {len(drug_rows)} drug rows and {len(note_rows)} note rows to {args.outdir}"
     )
 
 
