@@ -559,11 +559,11 @@ def main() -> None:
 
         # extract; soft-fail per note to keep pipeline running
         try:
-            llm.extract_all(
+            doc = llm.extract_all(
                 doc,
                 overwrite_existing=True,
                 max_items_per_call=args.max_items_per_call,
-                raise_exception_on_extraction_error=True,  # fail-fast for visibility
+                raise_exception_on_extraction_error=True,
             )
         except Exception:
             c_drug.extracted_items = []
