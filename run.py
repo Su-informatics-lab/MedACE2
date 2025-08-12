@@ -261,7 +261,10 @@ def _extract_from_text_chunks(
     *,
     max_chars: int,
 ) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
-    """run extraction over pre-chunked text and merge results. robust to SaT asserts."""
+    """run extraction over pre-chunked text and merge results.
+    NO hard failure: if SaT/extraction fails, raise RuntimeError; caller will
+    record a placeholder and continue.
+    """
     all_drug: List[dict] = []
     all_aki: List[dict] = []
     all_attr: List[dict] = []
@@ -290,15 +293,17 @@ def _extract_from_text_chunks(
                 all_alt.extend(_flatten_items(c_alt))
             # success at this tier
             return all_drug, all_aki, all_attr, all_alt
-        except AssertionError:
+        except Exception as e:
             # try next, smaller tier
             all_drug.clear()
             all_aki.clear()
             all_attr.clear()
             all_alt.clear()
+            last_err = e
             continue
-    # if all tiers failed, re-raise to fail loudly with context
-    raise AssertionError("SaT segmentation failed after multi-tier chunking")
+
+    # all tiers failed -> let caller create a placeholder
+    raise RuntimeError(f"segmentation_or_extraction_failed: {type(last_err).__name__}: {last_err}")  # type: ignore[name-defined]
 
 
 # ------------------------------- save helpers -------------------------------
@@ -308,6 +313,18 @@ def _atomic_write_parquet(df: pd.DataFrame, path: str) -> None:
     tmp = f"{path}.tmp"
     df.to_parquet(tmp, index=False)
     os.replace(tmp, path)
+
+
+def _placeholder_payload(error: str, note_len: int) -> dict:
+    """standard placeholder payload when SaT/extraction fails."""
+    return {
+        "_error": error,
+        "_note_len": note_len,
+        "drug_exposures": [],
+        "aki_mentions": [],
+        "attributions": [],
+        "alt_causes": [],
+    }
 
 
 # ---------------------------------- main ------------------------------------
@@ -415,6 +432,7 @@ def main() -> None:
     for i, (_, row) in enumerate(pbar, start=1):
         text = _clean_str(row.get("note_text"))
         if not text:
+            concept_payload = _placeholder_payload("empty_note_text", 0)
             note_rows.append(
                 {
                     "patient_id": row.get("patient_id"),
@@ -426,19 +444,10 @@ def main() -> None:
                     "n_drug_exposures_raw": 0,
                     "n_drug_exposures": 0,
                     "n_aki_mentions": 0,
-                    "concepts_json": json.dumps(
-                        {
-                            "drug_exposures": [],
-                            "aki_mentions": [],
-                            "attributions": [],
-                            "alt_causes": [],
-                        },
-                        ensure_ascii=False,
-                    ),
+                    "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
                 }
             )
         else:
-            # robust SaT-safe extraction
             try:
                 (
                     drug_items,
@@ -451,84 +460,102 @@ def main() -> None:
                     allowed_keys,
                     max_chars=args.max_chars_per_chunk,
                 )
-            except AssertionError as e:
-                # fail fast, but with context
-                raise AssertionError(
-                    f"SaT segmentation failed for note_id={row.get('note_id')}, "
-                    f"len={len(text)} after multi-tier chunking"
-                ) from e
+                raw_drug_count = len(drug_items)
 
-            raw_drug_count = len(drug_items)
+                # canonicalize + optional filtering
+                cleaned_drugs: List[Dict[str, Any]] = []
+                for de in drug_items:
+                    dn_raw = _clean_str(
+                        de.get("normalized_name") or de.get("drug_text")
+                    )
+                    key = normalize_name(dn_raw)
+                    canon = vocab["name_to_canonical"].get(key) if vocab else None
+                    if (
+                        args.filter_ici
+                        and vocab
+                        and (key not in vocab["name_to_canonical"])
+                        and not canon
+                    ):
+                        continue
 
-            # canonicalize + optional filtering
-            cleaned_drugs: List[Dict[str, Any]] = []
-            for de in drug_items:
-                dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
-                key = normalize_name(dn_raw)
-                canon = vocab["name_to_canonical"].get(key) if vocab else None
-                if (
-                    args.filter_ici
-                    and vocab
-                    and (key not in vocab["name_to_canonical"])
-                    and not canon
-                ):
-                    continue
+                    rxcui = _clean_str(de.get("rxcui"))
+                    if not rxcui and args.rxnorm_online and dn_raw:
+                        try:
+                            rxcui = resolve_rxcui(dn_raw) or ""
+                        except Exception:
+                            rxcui = ""
 
-                rxcui = _clean_str(de.get("rxcui"))
-                if not rxcui and args.rxnorm_online and dn_raw:
-                    try:
-                        rxcui = resolve_rxcui(dn_raw) or ""
-                    except Exception:
-                        rxcui = ""
+                    cleaned_drugs.append(
+                        {
+                            "patient_id": row.get("patient_id"),
+                            "encounter_id": row.get("encounter_id"),
+                            "note_id": row.get("note_id"),
+                            "note_date": row.get("note_datetime"),
+                            "note_type": row.get("note_type"),
+                            "drug_text": de.get("drug_text"),
+                            "normalized_name": dn_raw or None,
+                            "canonical_generic": canon,
+                            "class": (
+                                (vocab["by_name"].get(key, {}) or {}).get("class")
+                                if vocab
+                                else None
+                            ),
+                            "rxcui": rxcui or None,
+                            "dose_text": _clean_str(de.get("dose")) or None,
+                            "route_text": _clean_str(de.get("route")) or None,
+                            "when_text": _clean_str(
+                                de.get("date") or de.get("relative_time")
+                            )
+                            or None,
+                            "sentence": de.get("sentence")
+                            or (de.get("source_sentences") or [None])[0],
+                        }
+                    )
 
-                cleaned_drugs.append(
+                drug_rows.extend(cleaned_drugs)
+                concept_payload = {
+                    "drug_exposures": cleaned_drugs,
+                    "aki_mentions": aki_items,
+                    "attributions": attr_items,
+                    "alt_causes": alt_items,
+                }
+                note_rows.append(
                     {
                         "patient_id": row.get("patient_id"),
                         "encounter_id": row.get("encounter_id"),
                         "note_id": row.get("note_id"),
                         "note_date": row.get("note_datetime"),
                         "note_type": row.get("note_type"),
-                        "drug_text": de.get("drug_text"),
-                        "normalized_name": dn_raw or None,
-                        "canonical_generic": canon,
-                        "class": (
-                            (vocab["by_name"].get(key, {}) or {}).get("class")
-                            if vocab
-                            else None
+                        "has_alt_cause": bool(alt_items),
+                        "n_drug_exposures_raw": raw_drug_count,
+                        "n_drug_exposures": len(cleaned_drugs),
+                        "n_aki_mentions": len(aki_items),
+                        "concepts_json": json.dumps(
+                            concept_payload, ensure_ascii=False
                         ),
-                        "rxcui": rxcui or None,
-                        "dose_text": _clean_str(de.get("dose")) or None,
-                        "route_text": _clean_str(de.get("route")) or None,
-                        "when_text": _clean_str(
-                            de.get("date") or de.get("relative_time")
-                        )
-                        or None,
-                        "sentence": de.get("sentence")
-                        or (de.get("source_sentences") or [None])[0],
                     }
                 )
-
-            drug_rows.extend(cleaned_drugs)
-            concept_payload = {
-                "drug_exposures": cleaned_drugs,
-                "aki_mentions": aki_items,
-                "attributions": attr_items,
-                "alt_causes": alt_items,
-            }
-            note_rows.append(
-                {
-                    "patient_id": row.get("patient_id"),
-                    "encounter_id": row.get("encounter_id"),
-                    "note_id": row.get("note_id"),
-                    "note_date": row.get("note_datetime"),
-                    "note_type": row.get("note_type"),
-                    "has_alt_cause": bool(alt_items),
-                    "n_drug_exposures_raw": raw_drug_count,
-                    "n_drug_exposures": len(cleaned_drugs),
-                    "n_aki_mentions": len(aki_items),
-                    "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
-                }
-            )
+            except Exception as e:
+                # soft-fail: record placeholder and continue
+                concept_payload = _placeholder_payload(
+                    error=f"{type(e).__name__}: {e}", note_len=len(text)
+                )
+                note_rows.append(
+                    {
+                        "patient_id": row.get("patient_id"),
+                        "encounter_id": row.get("encounter_id"),
+                        "note_id": row.get("note_id"),
+                        "note_date": row.get("note_datetime"),
+                        "note_type": row.get("note_type"),
+                        "has_alt_cause": False,
+                        "n_drug_exposures_raw": 0,
+                        "n_drug_exposures": 0,
+                        "n_aki_mentions": 0,
+                        "concepts_json": json.dumps(
+                            concept_payload, ensure_ascii=False
+                        ),
+                    }
+                )
 
         # checkpoint
         if args.checkpoint_every and (i % args.checkpoint_every == 0):
