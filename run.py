@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 from decimal import Decimal, InvalidOperation
@@ -26,6 +27,19 @@ from tqdm import tqdm
 from src.prompts import SYSTEM_IRAKI  # clinical steering text
 from src.rxnorm import resolve_rxcui
 from src.vocab import load_vocab, normalize_name
+
+# ----------------------------- logging controls -----------------------------
+
+
+def _setup_logging(level: str = "ERROR") -> None:
+    # quiet noisy libs; keep our own prints/tqdm
+    lvl = getattr(logging, level.upper(), logging.ERROR)
+    logging.basicConfig(level=lvl)
+    for name in ("contextgem", "wtpsplit_lite", "httpx", "urllib3"):
+        logging.getLogger(name).setLevel(lvl)
+
+
+# --------------------------- parquet / io helpers ---------------------------
 
 
 def _normalize_model_id(m: str) -> str:
@@ -128,10 +142,12 @@ def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
     return df[keep]
 
 
+# --------------------------- concept + flattening ---------------------------
+
+
 def _concepts_for_note(
     allowed_names_for_hint: Optional[List[str]] = None,
 ) -> List[JsonObjectConcept]:
-    # show a small, mixed list of synonyms/generics in the hint to bias extraction
     hint_list = (allowed_names_for_hint or [])[:30]
     allow_hint = (
         f" only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
@@ -199,21 +215,13 @@ def _flatten_items(concept: JsonObjectConcept) -> List[dict]:
     return out
 
 
-# ------------------------- SaT safety: pre-chunking helpers -------------------------
+# ------------------------- SaT safety: pre-chunking -------------------------
 
 _BOUNDARIES_RE = re.compile(r"(\n{2,}|(?<=[.!?])\s+)")
 
 
-def _safe_chunk_text(text: str, *, max_chars: int = 30000) -> List[str]:
-    """split text into chunks ≤ max_chars on friendly boundaries to avoid SaT chunk asserts.
-
-    strategy:
-      1) normalize whitespace
-      2) if already small, return as-is
-      3) otherwise, accumulate pieces split on double newlines or sentence-like whitespace,
-         flushing to a new chunk when adding the next piece would exceed max_chars
-      4) if any single piece itself exceeds max_chars, hard-split it
-    """
+def _safe_chunk_text(text: str, *, max_chars: int) -> List[str]:
+    """split text into chunks ≤ max_chars on friendly boundaries to avoid SaT chunk asserts."""
     if not text:
         return []
     s = re.sub(r"[ \t]+", " ", text).strip()
@@ -228,14 +236,12 @@ def _safe_chunk_text(text: str, *, max_chars: int = 30000) -> List[str]:
         nonlocal cur, cur_len, chunks
         if cur:
             chunks.append("".join(cur).strip())
-            cur = []
-            cur_len = 0
+            cur, cur_len = [], 0
 
     for piece in _BOUNDARIES_RE.split(s):
         if not piece:
             continue
         if len(piece) > max_chars:
-            # hard-split oversized piece
             flush()
             for i in range(0, len(piece), max_chars):
                 chunks.append(piece[i : i + max_chars].strip())
@@ -255,55 +261,68 @@ def _extract_from_text_chunks(
     *,
     max_chars: int,
 ) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
-    """run extraction over pre-chunked text and merge results."""
+    """run extraction over pre-chunked text and merge results. robust to SaT asserts."""
     all_drug: List[dict] = []
     all_aki: List[dict] = []
     all_attr: List[dict] = []
     all_alt: List[dict] = []
 
-    # pre-chunk to keep SaT happy
-    chunks = _safe_chunk_text(text, max_chars=max_chars) or []
-    if not chunks:
-        return all_drug, all_aki, all_attr, all_alt
+    # tiered chunk sizes: primary -> retry smaller -> micro-fallback
+    tiers = [max_chars, max(max_chars // 2, 4000), 2000]
 
-    # prepare concepts once per chunk
-    for chunk in chunks:
-        c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
-            allowed_names_for_hint=allowed_keys
-        )
-        doc = Document(raw_text=chunk)
-        doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
-
+    for tier in tiers:
         try:
-            llm.extract_all(
-                doc, overwrite_existing=True, raise_exception_on_extraction_error=False
-            )
-        except AssertionError:
-            # rare SaT internal mismatch; retry with smaller chunks
-            smaller = _safe_chunk_text(chunk, max_chars=max(8000, max_chars // 2))
-            for sub in smaller:
-                sub_c_drug, sub_c_aki, sub_c_attr, sub_c_alt = _concepts_for_note(
+            chunks = _safe_chunk_text(text, max_chars=tier)
+            for chunk in chunks:
+                c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
                     allowed_names_for_hint=allowed_keys
                 )
-                sub_doc = Document(raw_text=sub)
-                sub_doc.add_concepts([sub_c_drug, sub_c_aki, sub_c_attr, sub_c_alt])
+                doc = Document(raw_text=chunk)
+                doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
                 llm.extract_all(
-                    sub_doc,
+                    doc,
                     overwrite_existing=True,
                     raise_exception_on_extraction_error=False,
                 )
-                all_drug.extend(_flatten_items(sub_c_drug))
-                all_aki.extend(_flatten_items(sub_c_aki))
-                all_attr.extend(_flatten_items(sub_c_attr))
-                all_alt.extend(_flatten_items(sub_c_alt))
+                all_drug.extend(_flatten_items(c_drug))
+                all_aki.extend(_flatten_items(c_aki))
+                all_attr.extend(_flatten_items(c_attr))
+                all_alt.extend(_flatten_items(c_alt))
+            # success at this tier
+            return all_drug, all_aki, all_attr, all_alt
+        except AssertionError:
+            # try next, smaller tier
+            all_drug.clear()
+            all_aki.clear()
+            all_attr.clear()
+            all_alt.clear()
             continue
+    # if all tiers failed, re-raise to fail loudly with context
+    raise AssertionError("SaT segmentation failed after multi-tier chunking")
 
-        all_drug.extend(_flatten_items(c_drug))
-        all_aki.extend(_flatten_items(c_aki))
-        all_attr.extend(_flatten_items(c_attr))
-        all_alt.extend(_flatten_items(c_alt))
 
-    return all_drug, all_aki, all_attr, all_alt
+# ------------------------------- save helpers -------------------------------
+
+
+def _atomic_write_parquet(df: pd.DataFrame, path: str) -> None:
+    tmp = f"{path}.tmp"
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, path)
+
+
+# ---------------------------------- main ------------------------------------
+
+
+def _parse_range(s: Optional[str], n: int) -> Tuple[int, int]:
+    """'start:end' -> (start, end) with end exclusive; handles blanks."""
+    if not s:
+        return 0, n
+    parts = s.split(":", 1)
+    start = int(parts[0]) if parts[0] else 0
+    end = int(parts[1]) if len(parts) > 1 and parts[1] else n
+    start = max(0, min(start, n))
+    end = max(start, min(end, n))
+    return start, end
 
 
 def main() -> None:
@@ -313,8 +332,12 @@ def main() -> None:
     ap.add_argument("--notes", required=True, help="path to DelPHEA v3 Parquet notes")
     ap.add_argument("--outdir", default="out")
     ap.add_argument("--debug", action="store_true", help="process first 10 notes only")
+    ap.add_argument("--offset", type=int, default=0, help="skip the first N notes")
     ap.add_argument(
-        "--offset", type=int, default=0, help="skip the first N notes before processing"
+        "--range",
+        type=str,
+        default=None,
+        help="slice as 'START:END' (END exclusive), applied after --offset",
     )
     ap.add_argument("--backend-url", default="http://127.0.0.1:8000/v1")
     ap.add_argument("--model", default="openai/gpt-oss-120b")
@@ -323,11 +346,7 @@ def main() -> None:
         default="resources/ici_vocab.csv",
         help="csv from vocab builder (defaults to resources/ici_vocab.csv if present)",
     )
-    ap.add_argument(
-        "--filter-ici",
-        action="store_true",
-        help="keep only drug exposures that map to vocab",
-    )
+    ap.add_argument("--filter-ici", action="store_true", help="keep only ICI exposures")
     ap.add_argument(
         "--rxnorm-online",
         action="store_true",
@@ -336,19 +355,39 @@ def main() -> None:
     ap.add_argument(
         "--max-chars-per-chunk",
         type=int,
-        default=30000,
-        help="max characters per chunk to avoid SaT chunking asserts",
+        default=8000,  # tighter default; avoids SaT chunk mismatch on long notes
+        help="max characters per chunk for SaT",
+    )
+    ap.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=50,
+        help="write partial results every N notes (atomic overwrite)",
+    )
+    ap.add_argument(
+        "--log-level",
+        type=str,
+        default="ERROR",
+        help="python logging level for libraries (default ERROR)",
     )
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
+    _setup_logging(args.log_level)
 
     df = _load_notes_delphea_v3(args.notes)
+
+    # selection
     if args.offset > 0:
         df = df.iloc[args.offset :].reset_index(drop=True)
     if args.debug:
         df = df.head(10).copy()
 
-    # vocab: use full synonym set for hinting; keys are normalized terms (brands + generics)
+    n = len(df)
+    start, end = _parse_range(args.range, n)
+    if start or end != n:
+        df = df.iloc[start:end].reset_index(drop=True)
+
+    # vocab
     vocab_path = args.drug_vocab or (
         os.path.join("resources", "ici_vocab.csv")
         if os.path.exists(os.path.join("resources", "ici_vocab.csv"))
@@ -365,14 +404,15 @@ def main() -> None:
         temperature=0.1,
         top_p=1.0,
         timeout=120,
-        max_retries_invalid_data=3,  # contextgem validates and retries malformed json
+        max_retries_invalid_data=3,
         output_language="en",
     )
 
     drug_rows: List[Dict[str, Any]] = []
     note_rows: List[Dict[str, Any]] = []
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="notes"):
+    pbar = tqdm(df.iterrows(), total=len(df), desc="notes")
+    for i, (_, row) in enumerate(pbar, start=1):
         text = _clean_str(row.get("note_text"))
         if not text:
             note_rows.append(
@@ -397,94 +437,121 @@ def main() -> None:
                     ),
                 }
             )
-            continue
+        else:
+            # robust SaT-safe extraction
+            try:
+                (
+                    drug_items,
+                    aki_items,
+                    attr_items,
+                    alt_items,
+                ) = _extract_from_text_chunks(
+                    text,
+                    llm,
+                    allowed_keys,
+                    max_chars=args.max_chars_per_chunk,
+                )
+            except AssertionError as e:
+                # fail fast, but with context
+                raise AssertionError(
+                    f"SaT segmentation failed for note_id={row.get('note_id')}, "
+                    f"len={len(text)} after multi-tier chunking"
+                ) from e
 
-        # run extraction across safe-sized chunks and merge
-        drug_items, aki_items, attr_items, alt_items = _extract_from_text_chunks(
-            text,
-            llm,
-            allowed_keys,
-            max_chars=args.max_chars_per_chunk,
-        )
+            raw_drug_count = len(drug_items)
 
-        raw_drug_count = len(drug_items)
+            # canonicalize + optional filtering
+            cleaned_drugs: List[Dict[str, Any]] = []
+            for de in drug_items:
+                dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
+                key = normalize_name(dn_raw)
+                canon = vocab["name_to_canonical"].get(key) if vocab else None
+                if (
+                    args.filter_ici
+                    and vocab
+                    and (key not in vocab["name_to_canonical"])
+                    and not canon
+                ):
+                    continue
 
-        # canonicalize + optional filtering
-        cleaned_drugs: List[Dict[str, Any]] = []
-        for de in drug_items:
-            dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
-            key = normalize_name(dn_raw)
-            canon = vocab["name_to_canonical"].get(key) if vocab else None
-            if (
-                args.filter_ici
-                and vocab
-                and (key not in vocab["name_to_canonical"])
-                and not canon
-            ):
-                continue
+                rxcui = _clean_str(de.get("rxcui"))
+                if not rxcui and args.rxnorm_online and dn_raw:
+                    try:
+                        rxcui = resolve_rxcui(dn_raw) or ""
+                    except Exception:
+                        rxcui = ""
 
-            rxcui = _clean_str(de.get("rxcui"))
-            if not rxcui and args.rxnorm_online and dn_raw:
-                try:
-                    rxcui = resolve_rxcui(dn_raw) or ""
-                except Exception:
-                    rxcui = ""
+                cleaned_drugs.append(
+                    {
+                        "patient_id": row.get("patient_id"),
+                        "encounter_id": row.get("encounter_id"),
+                        "note_id": row.get("note_id"),
+                        "note_date": row.get("note_datetime"),
+                        "note_type": row.get("note_type"),
+                        "drug_text": de.get("drug_text"),
+                        "normalized_name": dn_raw or None,
+                        "canonical_generic": canon,
+                        "class": (
+                            (vocab["by_name"].get(key, {}) or {}).get("class")
+                            if vocab
+                            else None
+                        ),
+                        "rxcui": rxcui or None,
+                        "dose_text": _clean_str(de.get("dose")) or None,
+                        "route_text": _clean_str(de.get("route")) or None,
+                        "when_text": _clean_str(
+                            de.get("date") or de.get("relative_time")
+                        )
+                        or None,
+                        "sentence": de.get("sentence")
+                        or (de.get("source_sentences") or [None])[0],
+                    }
+                )
 
-            cleaned_drugs.append(
+            drug_rows.extend(cleaned_drugs)
+            concept_payload = {
+                "drug_exposures": cleaned_drugs,
+                "aki_mentions": aki_items,
+                "attributions": attr_items,
+                "alt_causes": alt_items,
+            }
+            note_rows.append(
                 {
                     "patient_id": row.get("patient_id"),
                     "encounter_id": row.get("encounter_id"),
                     "note_id": row.get("note_id"),
                     "note_date": row.get("note_datetime"),
                     "note_type": row.get("note_type"),
-                    "drug_text": de.get("drug_text"),
-                    "normalized_name": dn_raw or None,
-                    "canonical_generic": canon,
-                    "class": (
-                        (vocab["by_name"].get(key, {}) or {}).get("class")
-                        if vocab
-                        else None
-                    ),
-                    "rxcui": rxcui or None,
-                    "dose_text": _clean_str(de.get("dose")) or None,
-                    "route_text": _clean_str(de.get("route")) or None,
-                    "when_text": _clean_str(de.get("date") or de.get("relative_time"))
-                    or None,
-                    "sentence": de.get("sentence")
-                    or (de.get("source_sentences") or [None])[0],
+                    "has_alt_cause": bool(alt_items),
+                    "n_drug_exposures_raw": raw_drug_count,
+                    "n_drug_exposures": len(cleaned_drugs),
+                    "n_aki_mentions": len(aki_items),
+                    "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
                 }
             )
 
-        drug_rows.extend(cleaned_drugs)
-        concept_payload = {
-            "drug_exposures": cleaned_drugs,
-            "aki_mentions": aki_items,
-            "attributions": attr_items,
-            "alt_causes": alt_items,
-        }
-        note_rows.append(
-            {
-                "patient_id": row.get("patient_id"),
-                "encounter_id": row.get("encounter_id"),
-                "note_id": row.get("note_id"),
-                "note_date": row.get("note_datetime"),
-                "note_type": row.get("note_type"),
-                "has_alt_cause": bool(alt_items),
-                "n_drug_exposures_raw": raw_drug_count,
-                "n_drug_exposures": len(cleaned_drugs),
-                "n_aki_mentions": len(aki_items),
-                "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
-            }
-        )
+        # checkpoint
+        if args.checkpoint_every and (i % args.checkpoint_every == 0):
+            _atomic_write_parquet(
+                pd.DataFrame(drug_rows),
+                os.path.join(args.outdir, "drug_mentions.partial.parquet"),
+            )
+            _atomic_write_parquet(
+                pd.DataFrame(note_rows),
+                os.path.join(args.outdir, "note_concepts.partial.parquet"),
+            )
+            # keep the progress bar clean but informative
+            pbar.set_postfix_str(f"checkpoint@{i}")
 
-    pd.DataFrame(drug_rows).to_parquet(
-        os.path.join(args.outdir, "drug_mentions.parquet"), index=False
+    # final write
+    _atomic_write_parquet(
+        pd.DataFrame(drug_rows), os.path.join(args.outdir, "drug_mentions.parquet")
     )
-    pd.DataFrame(note_rows).to_parquet(
-        os.path.join(args.outdir, "note_concepts.parquet"), index=False
+    _atomic_write_parquet(
+        pd.DataFrame(note_rows), os.path.join(args.outdir, "note_concepts.parquet")
     )
     print(
-        f"[ok] wrote {len(drug_rows)} drug rows and {len(note_rows)} note rows to {args.outdir}"
+        f"[OK] wrote {len(drug_rows)} drug rows and {len(note_rows)} note rows to {args.outdir}"
     )
 
 
