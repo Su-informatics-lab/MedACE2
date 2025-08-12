@@ -1,12 +1,31 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-MedACE
+MedACE – Minimal Concept Extraction (no SaT, no chunking)
 
-Extracts three concept families from DelPHEA v3 parquet clinical notes:
+Purpose
+-------
+Extract three concept families from DelPHEA v3 parquet clinical notes:
   1) ICI Drug Exposure
   2) AKI Mention
   3) AKI Attribution (clinician reasoning/stance)
 
-Per-note flow:
+Design
+------
+- YAGNI: no sentence segmentation / SaT, no chunking
+- Soft-fail per note; continue the job
+- Stable Parquet schemas; periodic checkpoints
+- Quiet logs via ContextGem's logger env var
+- Built-in `--sanity-check` runs on two mock notes to verify end-to-end
+
+Environment / Logging
+---------------------
+Set CONTEXTGEM_LOGGER_LEVEL to control verbosity. Examples:
+  export CONTEXTGEM_LOGGER_LEVEL=ERROR  # default, quiet
+  export CONTEXTGEM_LOGGER_LEVEL=OFF    # fully silent from ContextGem
+
+Per-note flow
+-------------
   ┌───────────────────────────────────────────────────────────┐
   │ Load single note text                                     │
   ├───────────────────────────────────────────────────────────┤
@@ -25,15 +44,16 @@ Per-note flow:
   │ Append rows; checkpoint every N notes                     │
   └───────────────────────────────────────────────────────────┘
 
-Outputs (Parquet):
-  - out/drug_mentions.parquet
-      patient_id, encounter_id, note_id, note_date, note_type,
-      drug_text, normalized_name, canonical_generic, class,
-      rxcui, dose_text, route_text, when_text
+Outputs (Parquet)
+-----------------
+- out/drug_mentions.parquet
+    patient_id, encounter_id, note_id, note_date, note_type,
+    drug_text, normalized_name, canonical_generic, class,
+    rxcui, dose_text, route_text, when_text
 
-  - out/note_concepts.parquet
-      patient_id, encounter_id, note_id, note_date, note_type,
-      n_drug_exposures, n_aki_mentions, n_attributions, concepts_json
+- out/note_concepts.parquet
+    patient_id, encounter_id, note_id, note_date, note_type,
+    n_drug_exposures, n_aki_mentions, n_attributions, concepts_json
 """
 
 from __future__ import annotations
@@ -42,7 +62,7 @@ import argparse
 import json
 import logging
 import os
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 # quiet ContextGem before importing it
@@ -87,13 +107,7 @@ def _normalize_model_id(m: str) -> str:
 
 
 def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
-    """Read DelPHEA v3 parquet with schema coercion before pandas.
-
-    Returns:
-        DataFrame with columns coerced to:
-          SERVICE_NAME(str), PHYSIOLOGIC_TIME(timestamp[s]),
-          OBFUSCATED_GLOBAL_PERSON_ID(str), ENCOUNTER_ID(str), REPORT_TEXT(str)
-    """
+    """Read DelPHEA v3 parquet with schema coercion before pandas."""
     t = pq.read_table(path)
     target = pa.schema(
         [
@@ -125,7 +139,9 @@ def _to_int64_from_str(series: pd.Series) -> pd.Series:
         try:
             if "e" in s.lower():
                 return int(Decimal(s))
-        except InvalidOperation:
+        except DecimalException:  # type: ignore[name-defined]
+            pass
+        except Exception:
             pass
         try:
             return int(s)
@@ -134,6 +150,9 @@ def _to_int64_from_str(series: pd.Series) -> pd.Series:
                 return int(float(s))
             except Exception:
                 return pd.NA
+
+    # handle DecimalException import lazily to avoid hard dependency
+    from decimal import DecimalException  # noqa: E402
 
     return series.map(conv).astype("Int64")
 
@@ -184,19 +203,59 @@ def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
     return df[keep]
 
 
+# --------------------------- sanity-check fixtures --------------------------
+
+
+def _make_sanity_df() -> pd.DataFrame:
+    """Create two mock notes: one positive (ICI+AKI+attribution), one negative."""
+    data = [
+        {
+            "patient_id": 1,
+            "note_id": "sanity:0000001",
+            "encounter_id": 101,
+            "note_datetime": pd.Timestamp("2025-07-24"),
+            "note_type": "Oncology Progress Note",
+            "note_text": (
+                "Metastatic melanoma. Receiving pembrolizumab 200 mg IV every 3 weeks; "
+                "last dose 2025-07-10. Creatinine rose from 1.0 to 2.1 on 2025-07-24 — "
+                "acute kidney injury likely ICI-related given bland urinalysis and eosinophilia. "
+                "Plan: hold pembrolizumab; start prednisone 1 mg/kg."
+            ),
+            "source_file": "sanity.parquet",
+        },
+        {
+            "patient_id": 2,
+            "note_id": "sanity:0000002",
+            "encounter_id": 202,
+            "note_datetime": pd.Timestamp("2025-07-24"),
+            "note_type": "Hospitalist Progress Note",
+            "note_text": (
+                "Admitted for COPD exacerbation. Home meds include lisinopril. "
+                "Creatinine stable at 0.9 mg/dL; no evidence of kidney injury. "
+                "No immunotherapy or checkpoint inhibitor exposure documented."
+            ),
+            "source_file": "sanity.parquet",
+        },
+    ]
+    df = pd.DataFrame(data)
+    # enforce pandas nullable int for ids
+    df["patient_id"] = df["patient_id"].astype("Int64")
+    df["encounter_id"] = df["encounter_id"].astype("Int64")
+    return df
+
+
 # --------------------------- concepts (no references) -----------------------
 
 
 def _examples_drug() -> List[JsonObjectExample]:
-    """Few-shot examples for drug exposure concept."""
     return [
         JsonObjectExample(
             content={
-                "drug_text": "Pembrolizumab 200 mg IV q3w given on 2024-06-15.",
+                "drug_text": "Pembrolizumab 200 mg IV q3w given on 2025-07-10.",
                 "normalized_name": "pembrolizumab",
                 "dose": "200 mg",
                 "route": "IV",
-                "date": "2024-06-15",
+                "date": "2025-07-10",
                 "relative_time": None,
                 "rxcui": "1607602",
             }
@@ -216,12 +275,11 @@ def _examples_drug() -> List[JsonObjectExample]:
 
 
 def _examples_aki() -> List[JsonObjectExample]:
-    """Few-shot examples for AKI mentions."""
     return [
         JsonObjectExample(
             content={
-                "sentence": "Acute kidney injury noted on 03/21.",
-                "onset_date": "03/21",
+                "sentence": "Acute kidney injury noted on 07/24.",
+                "onset_date": "2025-07-24",
             }
         ),
         JsonObjectExample(content={"sentence": "AKI improving.", "onset_date": None}),
@@ -229,7 +287,6 @@ def _examples_aki() -> List[JsonObjectExample]:
 
 
 def _examples_attr() -> List[JsonObjectExample]:
-    """Few-shot examples for attribution/stance."""
     return [
         JsonObjectExample(
             content={
@@ -242,14 +299,14 @@ def _examples_attr() -> List[JsonObjectExample]:
             content={
                 "stance": "unlikely ICI-related",
                 "drug_name": None,
-                "rationale": "Sepsis with hypotension and ATN pattern.",
+                "rationale": "Sepsis/ATN pattern without immune features.",
             }
         ),
         JsonObjectExample(
             content={
                 "stance": "uncertain",
                 "drug_name": "nivolumab",
-                "rationale": "Timing plausible but concomitant nephrotoxins.",
+                "rationale": "Plausible timing but concomitant nephrotoxins.",
             }
         ),
     ]
@@ -258,7 +315,7 @@ def _examples_attr() -> List[JsonObjectExample]:
 def _concepts_for_note(
     allowed_names_for_hint: Optional[List[str]] = None,
 ) -> List[JsonObjectConcept]:
-    """Define the three minimal concepts without sentence references (no SaT)."""
+    """Define minimal concepts without sentence references (no SaT)."""
     hint_list = (allowed_names_for_hint or [])[:30]
     allow_hint = (
         f" Only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
@@ -274,17 +331,17 @@ def _concepts_for_note(
         ),
         structure={
             "drug_text": str,
-            "normalized_name": str,
+            "normalized_name": str
+            | None,  # <- relaxed to avoid hard validation failures
             "dose": str | None,
             "route": str | None,
             "date": str | None,
             "relative_time": str | None,
             "rxcui": str | None,
         },
-        add_references=False,  # <- no sentence refs => no SaT usage
+        add_references=False,
         examples=_examples_drug(),
     )
-
     aki_concept = JsonObjectConcept(
         name="AKI Mention",
         description=(
@@ -295,7 +352,6 @@ def _concepts_for_note(
         add_references=False,
         examples=_examples_aki(),
     )
-
     attrib_concept = JsonObjectConcept(
         name="AKI Attribution",
         description=(
@@ -306,7 +362,6 @@ def _concepts_for_note(
         add_references=False,
         examples=_examples_attr(),
     )
-
     return [drug_concept, aki_concept, attrib_concept]
 
 
@@ -327,7 +382,6 @@ DRUG_COLS = [
     "route_text",
     "when_text",
 ]
-
 NOTE_COLS = [
     "patient_id",
     "encounter_id",
@@ -368,7 +422,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="MedACE minimal extractor (no SaT, no chunking)"
     )
-    ap.add_argument("--notes", required=True, help="path to DelPHEA v3 Parquet notes")
+    ap.add_argument("--notes", help="path to DelPHEA v3 Parquet notes")
+    ap.add_argument(
+        "--sanity-check",
+        action="store_true",
+        help="run on two built-in dummy notes instead of parquet",
+    )
     ap.add_argument("--outdir", default="out", help="output directory")
     ap.add_argument("--debug", action="store_true", help="process first 10 notes only")
     ap.add_argument("--offset", type=int, default=0, help="skip the first N notes")
@@ -405,6 +464,9 @@ def main() -> None:
     ap.add_argument("--max-items-per-call", type=int, default=1)
     args = ap.parse_args()
 
+    if not args.sanity_check and not args.notes:
+        raise SystemExit("--notes is required unless --sanity-check is used")
+
     # logging
     _setup_logging(args.log_level)
     if args.cg_log_level:
@@ -413,8 +475,12 @@ def main() -> None:
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    # load notes and slice
-    df = _load_notes_delphea_v3(args.notes)
+    # source dataframe
+    if args.sanity_check:
+        df = _make_sanity_df()
+    else:
+        df = _load_notes_delphea_v3(args.notes)  # type: ignore[arg-type]
+
     if args.offset > 0:
         df = df.iloc[args.offset :].reset_index(drop=True)
     if args.debug:
@@ -424,7 +490,11 @@ def main() -> None:
         df = df.iloc[start:end].reset_index(drop=True)
 
     # vocab (optional)
-    vocab_path = args.drug_vocab if os.path.exists(args.drug_vocab) else None
+    vocab_path = (
+        args.drug_vocab
+        if (args.drug_vocab and os.path.exists(args.drug_vocab))
+        else None
+    )
     vocab = load_vocab(vocab_path) if vocab_path else None
     allowed_keys = sorted(set(vocab["name_to_canonical"].keys())) if vocab else []
 
@@ -487,13 +557,13 @@ def main() -> None:
         doc = Document(raw_text=text)
         doc.add_concepts([c_drug, c_aki, c_attr])
 
-        # extract; soft-fail per note
+        # extract; soft-fail per note to keep pipeline running
         try:
             llm.extract_all(
                 doc,
                 overwrite_existing=True,
                 max_items_per_call=args.max_items_per_call,
-                raise_exception_on_extraction_error=True,
+                raise_exception_on_extraction_error=True,  # fail-fast for visibility
             )
         except Exception:
             c_drug.extracted_items = []
