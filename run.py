@@ -1,22 +1,10 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-MedACE – Minimal Concept Extraction (no SaT, no chunking)
+MedACE
 
 Extracts three concept families from DelPHEA v3 parquet clinical notes:
   1) ICI Drug Exposure
   2) AKI Mention
   3) AKI Attribution (clinician reasoning/stance)
-
-Design goals:
-  - YAGNI: no sentence segmentation / SaT, no chunking
-  - Fail soft per note; keep the job moving
-  - Stable Parquet schemas; periodic checkpoints
-  - Quiet logs via ContextGem’s native logger control
-
-Environment / logging:
-  - Set CONTEXTGEM_LOGGER_LEVEL to control verbosity.
-    e.g., ERROR (default), or OFF to silence all ContextGem logs.
 
 Per-note flow:
   ┌───────────────────────────────────────────────────────────┐
