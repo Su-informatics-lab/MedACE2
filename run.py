@@ -204,7 +204,7 @@ def main() -> None:
         description="MedACE irAKI concept extraction (ContextGem, parquet-only)"
     )
     ap.add_argument("--notes", required=True, help="path to DelPHEA v3 Parquet notes")
-    ap.add_argument("--outdir", default="outputs")
+    ap.add_argument("--outdir", default="out")
     ap.add_argument("--debug", action="store_true", help="process first 10 notes only")
     ap.add_argument(
         "--offset", type=int, default=0, help="skip the first N notes before processing"
