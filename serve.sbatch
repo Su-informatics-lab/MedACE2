@@ -61,7 +61,7 @@ apptainer exec --nv --cleanenv \
       --model openai/gpt-oss-120b \
       --tensor-parallel-size \"$TENSOR_PARALLEL\" \
       --gpu-memory-utilization 0.90 \
-      --max-model-len 8192 \
+      --max-model-len 131072 \
       --host 0.0.0.0 --port \"$PORT\"
   "
 
