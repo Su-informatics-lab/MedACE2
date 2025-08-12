@@ -18,9 +18,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from contextgem import Document, DocumentLLM, JsonObjectConcept
 from tqdm import tqdm
 
@@ -31,8 +34,55 @@ from src.vocab import load_vocab, normalize_name
 # ------------------------------- helpers ---------------------------------
 
 
-def _to_int64(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series, errors="coerce").astype("Int64")
+def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
+    """
+    Read DelPHEA v3 parquet and coerce types BEFORE pandas sees them:
+      - SERVICE_NAME, REPORT_TEXT -> string
+      - PHYSIOLOGIC_TIME -> timestamp (seconds)
+      - OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID -> string (avoid float)
+    """
+    t = pq.read_table(path)
+    target = pa.schema(
+        [
+            pa.field("SERVICE_NAME", pa.string()),
+            pa.field("PHYSIOLOGIC_TIME", pa.timestamp("s")),
+            pa.field("OBFUSCATED_GLOBAL_PERSON_ID", pa.string()),
+            pa.field("ENCOUNTER_ID", pa.string()),
+            pa.field("REPORT_TEXT", pa.string()),
+        ]
+    )
+    try:
+        t = t.cast(target, safe=False)
+    except Exception:
+        pass
+    return t.to_pandas(types_mapper=pd.ArrowDtype)
+
+
+def _to_int64_from_str(series: pd.Series) -> pd.Series:
+    """Convert string-ish IDs like '1168...000000000000' or '1.168e+15' to pandas Int64 safely."""
+
+    def conv(x):
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return pd.NA
+        s = str(x).strip()
+        if s == "" or s.lower() in {"nan", "none", "null"}:
+            return pd.NA
+        if "." in s and set(s.split(".", 1)[1]) <= {"0"}:
+            s = s.split(".", 1)[0]
+        try:
+            if "e" in s.lower():
+                return int(Decimal(s))
+        except InvalidOperation:
+            pass
+        try:
+            return int(s)
+        except Exception:
+            try:
+                return int(float(s))
+            except Exception:
+                return pd.NA
+
+    return series.map(conv).astype("Int64")
 
 
 def _clean_str(x: Any) -> str:
@@ -45,18 +95,28 @@ def _clean_str(x: Any) -> str:
 
 def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
     base = os.path.basename(path)
-    df = pd.read_parquet(path).copy()
+    df = _read_v3_parquet_coerced(path).copy()
+
     df["note_type"] = df.get("SERVICE_NAME", "").astype(str).str.strip()
     df["note_datetime"] = pd.to_datetime(df.get("PHYSIOLOGIC_TIME"), errors="coerce")
-    df["patient_id"] = _to_int64(df.get("OBFUSCATED_GLOBAL_PERSON_ID"))
-    df["encounter_id"] = _to_int64(df.get("ENCOUNTER_ID"))
+    df["patient_id"] = _to_int64_from_str(df.get("OBFUSCATED_GLOBAL_PERSON_ID"))
+    df["encounter_id"] = _to_int64_from_str(df.get("ENCOUNTER_ID"))
+
     txt = df.get("REPORT_TEXT", "")
-    df["note_text"] = txt.astype(str).apply(
-        lambda s: "" if s.strip().lower() in {"none", "nan", "null"} else s
+    df["note_text"] = (
+        pd.Series(txt, dtype="string")
+        .fillna("")
+        .apply(
+            lambda s: ""
+            if str(s).strip().lower() in {"none", "nan", "null"}
+            else str(s)
+        )
     )
+
     df = df.reset_index(drop=True)
     df["note_id"] = [f"{base}:{i:07d}" for i in range(len(df))]
     df["source_file"] = base
+
     keep = [
         "patient_id",
         "note_id",
@@ -178,8 +238,16 @@ def main() -> None:
         else None
     )
     vocab = load_vocab(vocab_path) if vocab_path else None
-    allowed_names = sorted(
-        {v["canonical_generic"] for v in (vocab["by_name"].values() if vocab else [])}
+    allowed_names = (
+        sorted(
+            {
+                v.get("canonical_generic")
+                for v in (vocab["by_name"].values() if vocab else [])
+                if v.get("canonical_generic")
+            }
+        )
+        if vocab
+        else []
     )
     allowed_keys = set(vocab["name_to_canonical"].keys()) if vocab else set()
 
@@ -229,7 +297,6 @@ def main() -> None:
         doc = Document(raw_text=text)
         doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
 
-        # Validate+retry handled internally; we suppress exceptions so one bad note doesn't kill the run
         llm.extract_all(
             doc, overwrite_existing=True, raise_exception_on_extraction_error=False
         )
@@ -247,12 +314,14 @@ def main() -> None:
             canon = vocab["name_to_canonical"].get(key) if vocab else None
             if args.filter_ici and vocab and key not in allowed_keys and not canon:
                 continue
+
             rxcui = _clean_str(de.get("rxcui"))
             if not rxcui and args.rxnorm_online and dn_raw:
                 try:
                     rxcui = resolve_rxcui(dn_raw) or ""
                 except Exception:
                     rxcui = ""
+
             cleaned_drugs.append(
                 {
                     "patient_id": row.get("patient_id"),
