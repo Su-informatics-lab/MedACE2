@@ -1,47 +1,38 @@
-# run.py
-# medace iraki prototype: note-level extraction + evidence labeling
-# supports your clinical_notes_version3 parquet schema and the standard schema.
+"""
+MedACE | ContextGem note-level extraction for ICI drugs & irAKI context (Parquet-only).
+
+Input parquet schema (DelPHEA v3):
+  SERVICE_NAME, PHYSIOLOGIC_TIME, OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID, REPORT_TEXT
+
+Features:
+  - No chunking (assumes long-context model on your vLLM endpoint)
+  - Integer IDs; note_id = "<file_basename>:<row_index>"
+  - ContextGem JsonObjectConcepts with sentence-level references and built-in JSON validation/retries
+  - Optional ICI vocab to canonicalize and (optionally) filter to ICI-only drug mentions
+  - Optional RxNorm (RxNav) backfill for RxCUI
+  - Outputs: drug_mentions.parquet, note_concepts.parquet
+"""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
+import json
 import os
-import sys
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from contextgem import Document, DocumentLLM, JsonObjectConcept
 from tqdm import tqdm
 
-from src.backend import LLMClient
-from src.chunker import chunk_text
-from src.extractors import LLMExtractor
-from src.io_utils import save_parquet  # reuse writer
+from src.prompts import SYSTEM_IRAKI  # clinical steering text
 from src.rxnorm import resolve_rxcui
-from src.score import label_note_evidence
 from src.vocab import load_vocab, normalize_name
 
 # ------------------------------- helpers ---------------------------------
 
 
-def _approx_date_from_text(s: str) -> Optional[pd.Timestamp]:
-    import re
-
-    if not s:
-        return None
-    m = re.search(r"(\d{4}-\d{2}-\d{2})", s)
-    if m:
-        try:
-            return pd.to_datetime(m.group(1))
-        except Exception:
-            pass
-    m = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", s)
-    if m:
-        try:
-            return pd.to_datetime(m.group(1))
-        except Exception:
-            pass
-    return None
+def _to_int64(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce").astype("Int64")
 
 
 def _clean_str(x: Any) -> str:
@@ -52,130 +43,99 @@ def _clean_str(x: Any) -> str:
     return s
 
 
-def _strip_decimal_id(s: str) -> str:
-    # turn "1168000077278488.000000000000000000" into "1168000077278488"
-    if "." in s:
-        left, right = s.split(".", 1)
-        if set(right) <= {"0"}:
-            return left
-    return s
-
-
-def _stable_note_id(person: str, enc: str, dt: str, idx: int) -> str:
-    base = f"{person}|{enc}|{dt}|{idx}"
-    h = hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
-    return f"iraki_note_{h}"
-
-
-def _detect_schema(cols: List[str]) -> str:
-    lc = {c.lower() for c in cols}
-    if {
-        "service_name",
-        "physiologic_time",
-        "obfuscated_global_person_id",
-        "report_text",
-    }.issubset(lc):
-        return "delphea_v3"
-    if {"patient_id", "note_id", "note_datetime", "note_text"}.issubset(lc):
-        return "standard"
-    return "unknown"
-
-
-def _load_notes_any(path: str, file_format: str, dataset_schema: str) -> pd.DataFrame:
-    # read raw
-    if file_format == "parquet":
-        df = pd.read_parquet(path)
-    elif file_format == "csv":
-        df = pd.read_csv(path)
-    else:
-        raise ValueError("format must be parquet or csv")
-
-    # decode schema
-    schema = dataset_schema
-    if schema == "auto":
-        schema = _detect_schema(list(df.columns))
-
-    if schema == "standard":
-        # require columns already present; ensure optional ones exist
-        need = ["patient_id", "note_id", "note_datetime", "note_text"]
-        for c in need:
-            if c not in df.columns:
-                raise ValueError(f"missing required column: {c}")
-        if "encounter_id" not in df.columns:
-            df["encounter_id"] = None
-        if "note_type" not in df.columns:
-            df["note_type"] = None
-        df["note_datetime"] = pd.to_datetime(df["note_datetime"], errors="coerce")
-        df["note_text"] = df["note_text"].fillna("")
-        return df
-
-    if schema == "delphea_v3":
-        # map:
-        # SERVICE_NAME -> note_type
-        # PHYSIOLOGIC_TIME -> note_datetime
-        # OBFUSCATED_GLOBAL_PERSON_ID -> patient_id
-        # ENCOUNTER_ID -> encounter_id
-        # REPORT_TEXT -> note_text
-        df = df.copy()
-        df["note_type"] = (
-            df["SERVICE_NAME"].apply(_clean_str) if "SERVICE_NAME" in df.columns else ""
-        )
-        df["note_datetime"] = (
-            pd.to_datetime(df["PHYSIOLOGIC_TIME"], errors="coerce")
-            if "PHYSIOLOGIC_TIME" in df.columns
-            else pd.NaT
-        )
-
-        pid = (
-            df["OBFUSCATED_GLOBAL_PERSON_ID"].apply(_clean_str)
-            if "OBFUSCATED_GLOBAL_PERSON_ID" in df.columns
-            else ""
-        )
-        df["patient_id"] = pid.apply(_strip_decimal_id)
-
-        enc = (
-            df["ENCOUNTER_ID"].apply(_clean_str) if "ENCOUNTER_ID" in df.columns else ""
-        )
-        df["encounter_id"] = enc.apply(_strip_decimal_id)
-
-        txt = df["REPORT_TEXT"].astype(str) if "REPORT_TEXT" in df.columns else ""
-        # normalize None/placeholder
-        df["note_text"] = txt.apply(
-            lambda s: "" if s.strip().lower() in {"none", "nan", "null"} else s
-        )
-
-        # synthesize note_id deterministically
-        ids = []
-        for i, r in df.reset_index(drop=True).iterrows():
-            ids.append(
-                _stable_note_id(
-                    _clean_str(r.get("patient_id")),
-                    _clean_str(r.get("encounter_id")),
-                    str(r.get("note_datetime")),
-                    i,
-                )
-            )
-        df["note_id"] = ids
-
-        # keep only the unified columns + a few pass-throughs
-        keep = [
-            "patient_id",
-            "note_id",
-            "encounter_id",
-            "note_datetime",
-            "note_type",
-            "note_text",
-        ]
-        # preserve original service and time for debugging if needed
-        for extra in ["SERVICE_NAME", "PHYSIOLOGIC_TIME"]:
-            if extra in df.columns and extra not in keep:
-                keep.append(extra)
-        return df[keep]
-
-    raise ValueError(
-        "unknown dataset schema. pass --dataset-schema delphea_v3 or standard, "
-        "or use --dataset-schema auto and ensure columns are detectable."
+def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
+    base = os.path.basename(path)
+    df = pd.read_parquet(path).copy()
+    df["note_type"] = df.get("SERVICE_NAME", "").astype(str).str.strip()
+    df["note_datetime"] = pd.to_datetime(df.get("PHYSIOLOGIC_TIME"), errors="coerce")
+    df["patient_id"] = _to_int64(df.get("OBFUSCATED_GLOBAL_PERSON_ID"))
+    df["encounter_id"] = _to_int64(df.get("ENCOUNTER_ID"))
+    txt = df.get("REPORT_TEXT", "")
+    df["note_text"] = txt.astype(str).apply(
+        lambda s: "" if s.strip().lower() in {"none", "nan", "null"} else s
     )
+    df = df.reset_index(drop=True)
+    df["note_id"] = [f"{base}:{i:07d}" for i in range(len(df))]
+    df["source_file"] = base
+    keep = [
+        "patient_id",
+        "note_id",
+        "encounter_id",
+        "note_datetime",
+        "note_type",
+        "note_text",
+        "source_file",
+    ]
+    return df[keep]
+
+
+def _concepts_for_note(
+    allowed_generic_names: Optional[List[str]] = None,
+) -> List[JsonObjectConcept]:
+    allow_hint = (
+        f" Only keep if the drug is an ICI: {', '.join(allowed_generic_names[:30])}…"
+        if allowed_generic_names
+        else " Only keep if the drug is an ICI."
+    )
+    drug_concept = JsonObjectConcept(
+        name="ICI Drug Exposure",
+        description="Extract immune checkpoint inhibitor exposures with attributes."
+        + allow_hint,
+        structure={
+            "drug_text": str,
+            "normalized_name": str,
+            "dose": str | None,
+            "route": str | None,
+            "date": str | None,
+            "relative_time": str | None,
+            "sentence": str,
+            "rxcui": str | None,
+        },
+        add_references=True,
+        reference_depth="sentences",
+    )
+    aki_concept = JsonObjectConcept(
+        name="AKI Mention",
+        description="Sentences mentioning acute kidney injury (AKI) and any onset date/timeframe.",
+        structure={"sentence": str, "onset_date": str | None},
+        add_references=True,
+        reference_depth="sentences",
+    )
+    attrib_concept = JsonObjectConcept(
+        name="AKI Attribution",
+        description="Clinician stance that AKI is caused by ICI, ruled out, or uncertain; include brief rationale and citations.",
+        structure={
+            "stance": str,
+            "drug_name": str | None,
+            "sentences": list[str],
+            "rationale": str | None,
+        },
+        add_references=True,
+        reference_depth="sentences",
+    )
+    alt_cause_concept = JsonObjectConcept(
+        name="Alternative AKI Causes",
+        description="Non-ICI AKI causes (e.g., sepsis, contrast, obstruction, nephrotoxins) with evidence sentences.",
+        structure={"cause": str, "sentences": list[str]},
+        add_references=True,
+        reference_depth="sentences",
+    )
+    return [drug_concept, aki_concept, attrib_concept, alt_cause_concept]
+
+
+def _flatten_items(concept: JsonObjectConcept) -> List[dict]:
+    out: List[dict] = []
+    for it in getattr(concept, "extracted_items", []) or []:
+        val = getattr(it, "value", None)
+        refs = getattr(it, "reference_sentences", None)
+        ref_sents = [s.raw_text for s in refs] if refs else []
+        if isinstance(val, dict):
+            if ref_sents and "source_sentences" not in val:
+                val["source_sentences"] = ref_sents
+            out.append(val)
+        elif isinstance(val, str):
+            out.append({"sentence": val, "source_sentences": ref_sents})
+    return out
 
 
 # ------------------------------- main -------------------------------------
@@ -183,223 +143,169 @@ def _load_notes_any(path: str, file_format: str, dataset_schema: str) -> pd.Data
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="MedACE irAKI prototype: note-level extraction + evidence labeling"
+        description="MedACE irAKI concept extraction (ContextGem, parquet-only)"
     )
-
-    # data
-    ap.add_argument("--notes", required=True, help="path to notes parquet/csv")
-    ap.add_argument("--format", choices=["parquet", "csv"], default="parquet")
-    ap.add_argument(
-        "--dataset-schema", choices=["auto", "standard", "delphea_v3"], default="auto"
-    )
-    ap.add_argument("--sample-n", type=int, default=50)
+    ap.add_argument("--notes", required=True, help="path to DelPHEA v3 Parquet notes")
     ap.add_argument("--outdir", default="outputs")
-
-    # llm backend
-    ap.add_argument("--backend-url", default="http://127.0.0.1:8000")
+    ap.add_argument("--debug", action="store_true", help="process first 10 notes only")
+    ap.add_argument("--backend-url", default="http://127.0.0.1:8000/v1")
     ap.add_argument("--model", default="openai/gpt-oss-120b")
-
-    # chunking
-    ap.add_argument("--chunk-chars", type=int, default=3500)
-    ap.add_argument("--max-chunks", type=int, default=6)
-
-    # vocab + filtering
     ap.add_argument(
         "--drug-vocab",
         default=None,
-        help="CSV from your vocab builder; if omitted, tries resources/ici_vocab.csv",
+        help="CSV from vocab builder (defaults to resources/ici_vocab.csv if present)",
     )
     ap.add_argument(
         "--filter-ici",
         action="store_true",
-        help="keep only drug exposures that match vocab",
+        help="keep only drug exposures that map to vocab",
     )
-
-    # rxnorm
     ap.add_argument(
         "--rxnorm-online",
         action="store_true",
-        help="resolve RxCUI via RxNav (prefer local RxNav-in-a-Box)",
+        help="resolve RxCUI via RxNav if missing",
     )
-
-    # scoring
-    ap.add_argument("--window-days", type=int, default=60)
-
-    # outputs
-    ap.add_argument("--save-csv", action="store_true")
-
     args = ap.parse_args()
-
     os.makedirs(args.outdir, exist_ok=True)
 
-    # notes loader supports your parquet schema
-    df = _load_notes_any(args.notes, args.format, args.dataset_schema)
-    if args.sample_n and args.sample_n > 0 and len(df) > args.sample_n:
-        df = df.sample(n=args.sample_n, random_state=42).copy()
+    df = _load_notes_delphea_v3(args.notes)
+    if args.debug:
+        df = df.head(10).copy()
 
-    # auto default vocab if present
-    vocab_path = args.drug_vocab
-    if not vocab_path:
-        candidate = os.path.join("resources", "ici_vocab.csv")
-        if os.path.exists(candidate):
-            vocab_path = candidate
-
+    vocab_path = args.drug_vocab or (
+        os.path.join("resources", "ici_vocab.csv")
+        if os.path.exists(os.path.join("resources", "ici_vocab.csv"))
+        else None
+    )
     vocab = load_vocab(vocab_path) if vocab_path else None
+    allowed_names = sorted(
+        {v["canonical_generic"] for v in (vocab["by_name"].values() if vocab else [])}
+    )
+    allowed_keys = set(vocab["name_to_canonical"].keys()) if vocab else set()
 
-    # wire llm
-    client = LLMClient(endpoint_url=args.backend_url, model=args.model)
-    extractor = LLMExtractor(client)
+    llm = DocumentLLM(
+        model=args.model,
+        api_base=args.backend_url,
+        system_message=SYSTEM_IRAKI,
+        temperature=0.1,
+        top_p=0.3,
+        timeout=120,
+        max_retries_invalid_data=3,  # ContextGem will retry malformed JSON
+        output_language="en",
+    )
 
     drug_rows: List[Dict[str, Any]] = []
-    ev_rows: List[Dict[str, Any]] = []
+    note_rows: List[Dict[str, Any]] = []
 
-    for i, row in tqdm(df.iterrows(), total=len(df), desc="notes"):
-        note_text = str(row.get("note_text") or "")
-        chunks = chunk_text(
-            note_text, max_chars=args.chunk_chars, max_chunks=args.max_chunks
-        )
-
-        all_concepts: List[Dict[str, Any]] = []
-        for ch in chunks:
-            try:
-                concepts = extractor.concepts(ch["text"])
-            except Exception:
-                concepts = {
-                    "drug_exposures": [],
-                    "aki_mentions": [],
-                    "attributions": [],
-                    "alt_causes": [],
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="notes"):
+        text = _clean_str(row.get("note_text"))
+        if not text:
+            note_rows.append(
+                {
+                    "patient_id": row.get("patient_id"),
+                    "encounter_id": row.get("encounter_id"),
+                    "note_id": row.get("note_id"),
+                    "note_date": row.get("note_datetime"),
+                    "note_type": row.get("note_type"),
+                    "has_alt_cause": False,
+                    "n_drug_exposures": 0,
+                    "n_aki_mentions": 0,
+                    "concepts_json": json.dumps(
+                        {
+                            "drug_exposures": [],
+                            "aki_mentions": [],
+                            "attributions": [],
+                            "alt_causes": [],
+                        },
+                        ensure_ascii=False,
+                    ),
                 }
-            all_concepts.append(concepts)
+            )
+            continue
 
-        # collect
-        drug_dates: List[pd.Timestamp] = []
-        alt_causes_present = False
+        c_drug, c_aki, c_attr, c_alt = _concepts_for_note(
+            allowed_generic_names=allowed_names or []
+        )
+        doc = Document(raw_text=text)
+        doc.add_concepts([c_drug, c_aki, c_attr, c_alt])
 
-        # alt causes
-        for c in all_concepts:
-            for alt in c.get("alt_causes") or []:
-                if (alt.get("cause") or "").strip():
-                    alt_causes_present = True
-
-        # drug exposures
-        for c in all_concepts:
-            for de in c.get("drug_exposures") or []:
-                dn_raw = (
-                    de.get("normalized_name") or de.get("drug_text") or ""
-                ).strip()
-                dn_key = normalize_name(dn_raw)
-
-                # optional filter to ICI
-                if (
-                    args.filter_ici
-                    and vocab is not None
-                    and dn_key not in vocab["name_to_canonical"]
-                ):
-                    continue
-
-                rxcui = (de.get("rxcui") or "").strip()
-                if not rxcui and args.rxnorm_online and dn_raw:
-                    r = resolve_rxcui(dn_raw)
-                    if r:
-                        rxcui = r
-
-                sentence = de.get("sentence") or ""
-                date_guess = _approx_date_from_text(sentence) or _approx_date_from_text(
-                    de.get("date") or ""
-                )
-                if date_guess is not None:
-                    drug_dates.append(pd.to_datetime(date_guess, errors="coerce"))
-
-                vocab_row = vocab["by_name"].get(dn_key, {}) if vocab else {}
-
-                drug_rows.append(
-                    {
-                        "patient_id": row.get("patient_id"),
-                        "encounter_id": row.get("encounter_id"),
-                        "note_id": row.get("note_id"),
-                        "note_date": row.get("note_datetime"),
-                        "note_type": row.get("note_type"),
-                        "drug_text": de.get("drug_text"),
-                        "normalized_name": dn_raw,
-                        "canonical_generic": vocab_row.get("canonical_generic"),
-                        "class": vocab_row.get("class"),
-                        "rxcui": rxcui,
-                        "dose_text": de.get("dose"),
-                        "route_text": de.get("route"),
-                        "when_text": de.get("date") or de.get("relative_time"),
-                        "sentence": sentence,
-                    }
-                )
-
-        # aki + attribution
-        aki_onset: Optional[pd.Timestamp] = None
-        evidence_sentences: List[str] = []
-        rationale = ""
-        attributions: List[Dict[str, Any]] = []
-        drug_name_for_att: Optional[str] = None
-
-        for c in all_concepts:
-            for a in c.get("attributions") or []:
-                attributions.append(a)
-                if a.get("sentences"):
-                    evidence_sentences.extend([s for s in a.get("sentences") if s])
-                if a.get("rationale"):
-                    rationale = a.get("rationale")
-                if a.get("drug_name"):
-                    drug_name_for_att = a.get("drug_name")
-
-            for am in c.get("aki_mentions") or []:
-                if am.get("onset_date"):
-                    try:
-                        aki_onset = pd.to_datetime(am["onset_date"])
-                    except Exception:
-                        pass
-                if am.get("sentence"):
-                    evidence_sentences.append(am["sentence"])
-
-        label = label_note_evidence(
-            note_row=row.to_dict(),
-            attributions=attributions,
-            drug_dates=[d for d in drug_dates if pd.notnull(d)],
-            aki_onset=aki_onset,
-            window_days=args.window_days,
-            has_alt_cause=alt_causes_present,
+        # Validate+retry handled internally; we suppress exceptions so one bad note doesn't kill the run
+        llm.extract_all(
+            doc, overwrite_existing=True, raise_exception_on_extraction_error=False
         )
 
-        ev_rows.append(
+        drug_items = _flatten_items(c_drug)
+        aki_items = _flatten_items(c_aki)
+        attr_items = _flatten_items(c_attr)
+        alt_items = _flatten_items(c_alt)
+
+        # canonicalize + optional filtering
+        cleaned_drugs: List[Dict[str, Any]] = []
+        for de in drug_items:
+            dn_raw = _clean_str(de.get("normalized_name") or de.get("drug_text"))
+            key = normalize_name(dn_raw)
+            canon = vocab["name_to_canonical"].get(key) if vocab else None
+            if args.filter_ici and vocab and key not in allowed_keys and not canon:
+                continue
+            rxcui = _clean_str(de.get("rxcui"))
+            if not rxcui and args.rxnorm_online and dn_raw:
+                try:
+                    rxcui = resolve_rxcui(dn_raw) or ""
+                except Exception:
+                    rxcui = ""
+            cleaned_drugs.append(
+                {
+                    "patient_id": row.get("patient_id"),
+                    "encounter_id": row.get("encounter_id"),
+                    "note_id": row.get("note_id"),
+                    "note_date": row.get("note_datetime"),
+                    "note_type": row.get("note_type"),
+                    "drug_text": de.get("drug_text"),
+                    "normalized_name": dn_raw or None,
+                    "canonical_generic": canon,
+                    "class": (vocab["by_name"].get(key, {}) or {}).get("class")
+                    if vocab
+                    else None,
+                    "rxcui": rxcui or None,
+                    "dose_text": _clean_str(de.get("dose")) or None,
+                    "route_text": _clean_str(de.get("route")) or None,
+                    "when_text": _clean_str(de.get("date") or de.get("relative_time"))
+                    or None,
+                    "sentence": de.get("sentence")
+                    or (de.get("source_sentences") or [None])[0],
+                }
+            )
+
+        drug_rows.extend(cleaned_drugs)
+        concept_payload = {
+            "drug_exposures": cleaned_drugs,
+            "aki_mentions": aki_items,
+            "attributions": attr_items,
+            "alt_causes": alt_items,
+        }
+        note_rows.append(
             {
                 "patient_id": row.get("patient_id"),
                 "encounter_id": row.get("encounter_id"),
                 "note_id": row.get("note_id"),
                 "note_date": row.get("note_datetime"),
-                "best_relation": label["best_relation"],
-                "evidence_level": label["evidence_level"],
-                "drug_name": drug_name_for_att,
-                "has_alt_cause": alt_causes_present,
-                "evidence_sentences": "\n".join(evidence_sentences[:5]),
-                "rationale": rationale,
-                "note_text": (row.get("note_text") or "")[:1200],
+                "note_type": row.get("note_type"),
+                "has_alt_cause": bool(alt_items),
+                "n_drug_exposures": len(cleaned_drugs),
+                "n_aki_mentions": len(aki_items),
+                "concepts_json": json.dumps(concept_payload, ensure_ascii=False),
             }
         )
 
-    df_drugs = pd.DataFrame(drug_rows)
-    df_evid = pd.DataFrame(ev_rows)
-
-    save_parquet(df_drugs, os.path.join(args.outdir, "drug_mentions.parquet"))
-    save_parquet(df_evid, os.path.join(args.outdir, "iraki_evidence.parquet"))
-
-    if args.save_csv:
-        df_drugs.to_csv(os.path.join(args.outdir, "drug_mentions.csv"), index=False)
-        df_evid.to_csv(os.path.join(args.outdir, "iraki_evidence.csv"), index=False)
-
-    try:
-        from scripts.labelstudio_export import to_labelstudio
-
-        df_prob = df_evid[df_evid["evidence_level"] == "prob"].copy()
-        to_labelstudio(df_prob, os.path.join(args.outdir, "labelstudio_prob.json"))
-    except Exception as e:
-        print(f"[warn] labelstudio export skipped: {e}", file=sys.stderr)
+    pd.DataFrame(drug_rows).to_parquet(
+        os.path.join(args.outdir, "drug_mentions.parquet"), index=False
+    )
+    pd.DataFrame(note_rows).to_parquet(
+        os.path.join(args.outdir, "note_concepts.parquet"), index=False
+    )
+    print(
+        f"[OK] wrote {len(drug_rows)} drug rows and {len(note_rows)} note rows to {args.outdir}"
+    )
 
 
 if __name__ == "__main__":
