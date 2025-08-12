@@ -1,0 +1,181 @@
+HCPCS,Generic Name,Brand Name,Strength,SEER*Rx Category,Major Drug Class,Minor Drug Class,Oral (Y/N),FDA Approval Year,FDA Discontinuation Year,CMS Effective Date,CMS Discontinuation Date,Status
+,Adagrasib,Krazati,200mg,Immunotherapy,RAS Inhibitor,KrAS G12C,Yes,2022,,,,In Use
+J9354,Ado-Trastuzumab Emtansine,Kadcyla,1mg,Immunotherapy,Drug Antibody Conjugate,HER2,No,2013,,1/1/2014,,In Use
+C9131,Ado-Trastuzumab Emtansine,Kadcyla,1mg,Immunotherapy,Drug Antibody Conjugate,HER2,No,2013,,7/1/2013,12/31/2013,No Longer Used
+Q2057,Afamitresgene autoleucel,Tecelra,per therapeutic dose,Immunotherapy,T Cell Receptor (TCR),MAGE-A4,No,2024,,3/26/2025,,In Use
+J9015,Aldesleukin,Proleukin,Per single vial (1 vial = 22 million IU),Immunotherapy,Cytokine,Interleukin-2,No,1992,,10/1/1996,,In Use
+S0087,Alemtuzumab,Campath,30 mg,Immunotherapy,Monoclonal Antibody,CD52,No,2001,2012,1/1/2002,12/31/2002,No Longer Used
+J0202,Alemtuzumab,Lemtrada,1 mg,Immunotherapy,Monoclonal Antibody,CD52,No,2001,,1/1/2016,,In Use
+C9110,Alemtuzumab,Lemtrada,10 mg,Immunotherapy,Monoclonal Antibody,CD52,No,2001,,1/1/2001,12/31/2007,No Longer Used
+J9010,Alemtuzumab,Campath,10 mg,Immunotherapy,Monoclonal Antibody,CD52,No,2001,2012,1/1/2003,12/31/2015,No Longer Used
+Q9979,Alemtuzumab,Lemtrada,1 mg,Immunotherapy,Monoclonal Antibody,CD52,No,2001,,10/1/2015,12/31/2015,No Longer Used
+J9061,Amivantamab,Rybrevant,2mg,Immunotherapy,Monoclonal Antibody,"EGFR, MET",No,2021,,1/26/2022,,In Use
+C9083,Amivantamab-vmjw,Rybrevant,10mg,Immunotherapy,Monoclonal Antibody,"EGFR,MET",No,2021,,9/27/2021,1/26/2022,No Longer Used
+C9483,Atezolizumab,Tecentriq,10 mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2016,,10/1/2016,,In Use
+J9022,Atezolizumab,Tecentriq,10mg,Immunotherapy,Checkpoint Inhibitor,PD-L1,No,2016,,1/1/2018,,In Use
+J9024,"Atezolizumab, hyaluronidase-tqjs",Tecentriq Hybreza,5mg,Immunotherapy,Checkpoint Inhibitor,PD-L1,No,2024,,3/26/2025,,In Use
+J9023,Avelumab,Bavencio,10mg,Immunotherapy,Checkpoint Inhibitor,PD-L1,No,2017,,1/1/2018,,In Use
+C9491,Avelumab,Bavencio,10 mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2017,,10/1/2017,,In Use
+Q2041,Axicabtagene Ciloleucel,Yescarta,Up to 200 million,Immunotherapy,CAR-T,CD19,No,2017,,1/1/2019,,In Use
+C9416,BCG,"BCG, Intravesical",Per instillation,Immunotherapy,Biological Response Modifier,Live Vaccine,No,1990,,1/1/2004,12/31/2003,No Longer Used
+J9030,Bacillus calmette-guerin,"BCG Vaccine, Tice BCG",1mg,Immunotherapy,Biological Response Modifier,Live Vaccine,No,1990,,7/1/2019,,In Use
+J9031,Bacillus calmette-guerin substrain nice live antigen,"Theracys, BCG Vaccine",Per instillation,Immunotherapy,Biological Response Modifier,Live Vaccine,No,1990,,1/1/1991,7/1/2019,No Longer Used
+J9037,Belantamab mafodontin-blmf,Blenrep,0.5mg,Immunotherapy,Drug Antibody Conjugate,BCMA,No,2020,,4/1/2021,3/26/2025,No Longer Used
+C9069,Belantamab mafodotin-blmf,Blenrep,0.5mg,Immunotherapy,Drug Antibody Conjugate,BCMA,No,2020,,1/1/2021,,No Longer Used
+C9257,Bevacizumab,Avastin,0.25 mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2004,,1/1/2010,,In Use
+C9214,Bevacizumab,Avastin,10 mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2004,,2/26/2004,12/31/2004,No Longer Used
+S0116,Bevacizumab,Avastin,100 mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2004,,7/1/2004,6/30/2006,No Longer Used
+J9035,Bevacizumab,Avastin,10 mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2004,,1/1/2005,,In Use
+Q2024,Bevacizumab,Avastin,0.25 mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2004,,10/1/2009,12/31/2009,No Longer Used
+Q5129,Bevacizumab-adcd,Vegzelma,10mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2023,,3/17/2023,,In Use
+Q5107,Bevacizumab-awwb,Mvasi,10mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2018,,1/1/2019,,In Use
+Q5118,Bevacizumab-bvzr,Zirabev,10mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2019,,10/1/2019,,In Use
+C9142,Bevacizumab-maly,Alymsys,10mg,Immunotherapy,Monoclonal Antibody,VEGF,No,2022,,9/27/2022,12/21/2022,No Longer Used
+Q5126,Bevacizumab-maly,Alymsys,10mg,Immunotherapy,Monoclonal Antibody,VEGF,No,2022,,11/28/2022,,In Use
+J9039,Blinatumomab,Blincyto,1 mcg,Immunotherapy,Monoclonal Antibody,CD3 (T cells) and CD19 (B cells),No,2014,,1/1/2016,,In Use
+C9449,Blinatumomab,Blincyto,1 mcg,Immunotherapy,Monoclonal Antibody,CD3 (T cells) and CD19 (B cells),No,2014,,4/1/2015,,In Use
+J9042,Brentuximab vedotin,Adcetris,1 mg,Immunotherapy,Drug Antibody Conjugate,CD30,No,2011,,1/1/2013,,In Use
+C9287,Brentuximab vedotin,Adcetris,1 mg,Immunotherapy,Drug Antibody Conjugate,CD30,No,2011,,1/1/2012,12/31/2012,No Longer Used
+C9073,Brexucabtagene autileucel,Tecartus,2000000,Immunotherapy,CAR-T,CD19,No,2020,,1/1/2021,4/1/2021,In Use
+Q2053,Brexucabtagene autoleucel,Tecartus,2000000,Immunotherapy,CAR-T,CD-19,No,2020,,4/1/2021,,In Use
+J9113,Cemiplimab-rwlc,Libtayo,1mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2018,,10/1/2019,,In Use
+C9215,Cetuximab,Erbitux,10 mg,Immunotherapy,Monoclonal Antibody,EGFR,No,2004,,2/12/2004,12/31/2004,No Longer Used
+J9055,Cetuximab,Erbitux,10 mg,Immunotherapy,Monoclonal Antibody,EGFR,No,2004,,1/1/2005,,In Use
+C9098,Ciltacabtagene autoleucel,CARVYKTI,up to 100 million,Immunotherapy,CAR-T,,No,2022,,3/25/2022,9/27/2022,No Longer Used
+Q2056,Ciltacabtagene autoleucel,CARVYKTI,up to 100 million,Immunotherapy,CAR-T,,No,2022,,9/27/2022,,In Use
+C9476,Daratumumab,Darzalex,10 mg,Immunotherapy,Monoclonal Antibody,CD38,No,2015,,7/1/2016,,In Use
+J9145,Daratumumab,Darzalex,10 mg,Immunotherapy,Monoclonal Antibody,CD38,No,2015,,1/1/2017,,In Use
+C9062,Daratumumab Hyaluronidase,Darzalex Faspro,10mg,Immunotherapy,Monoclonal Antibody,CD38,No,2020,,10/1/2020,1/1/2021,No Longer Used
+J9144,"Daratumumab, hyaluronidase-fihj",Darzalex Faspro,10mg,Immunotherapy,Monoclonal Antibody,CD38,No,2020,,1/1/2021,,In Use
+C9174,Datopotamab Deruxtecan,Datroway,1mg,Immunotherapy,Drug Antibody Conjugate,Topoisomerase I,No,2025,,5/13/2025,,In Use
+J9160,Denileukin Diftitox,Ontak,300 mcg,Immunotherapy,Cytokine,Interleukin-2,No,1999,,1/1/2001,,In Use
+J0897,Denosumab,Prolia,1 mg,Immunotherapy,Monoclonal Antibody,RANKL,No,2010,,10/1/2012,,In Use
+Q5136,Denosumab-bbdz,Jubbonti/Wyost,1mg,Immunotherapy,Monoclonal Antibody,RANKL,No,2024,,9/11/2024,,In Use
+NA,Dinutuximab,Unituxin,3.5 mg/mL,Immunotherapy,Monoclonal Antibody,GD-2,No,2015,,,,In Use
+NA,Dostarlimab,Jemperli,50mg,Immunotherapy,Checkpoint Inhibitor,PD-1,Yes,2021,,,,In Use
+J9272,Dostarlimab-gxly,Jemperli,10mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2021,,1/26/2022,,In Use
+C9082,Dostarlimab-gxly,Jemperli,100mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2021,,9/27/2021,1/26/2022,No Longer Used
+J9173,Durvalumab,Imfinzi,10mg,Immunotherapy,Checkpoint Inhibitor,PD-L1,No,2017,,1/1/2019,,In Use
+C9492,Durvalumab,Imfinzi,10 mg,Immunotherapy,Checkpoint Inhibitor,PD-L1,No,2017,,10/1/2017,,In Use
+J9361,Efbemalenograstim alfa-vuxw,Ryzneuta,0.5mg,Immunotherapy,Immunostimulant,Granulocyte Colony-Stimulating Factor,No,2023,,6/10/2024,,In Use
+J9176,Elotuzumab,Empliciti,1 mg,Immunotherapy,Monoclonal Antibody,SLAMF7,No,2015,,1/1/2017,,In Use
+C9477,Elotuzumab,Empliciti,1 mg,Immunotherapy,Monoclonal Antibody,SLAMF7,No,2015,,7/1/2016,12/31/2016,No Longer Used
+J1323,Elranatamab-bcmm,Elranatamab-bcmm,1mg,Immunotherapy,Monoclonal Antibody,"BCMA, CD3",No,2023,,4/17/2024,,In Use
+C9165,Elranatamab-bcmm,Elrexfio,1mg,Immunotherapy,Monoclonal Antibody,"BCMA, CD3",No,2023,,12/7/2023,4/17/2024,No Longer Used
+J9177,Enfortumab vedotin-ejfv,Padcev,0.25mg,Immunotherapy,Drug Antibody Conjugate,Nectin-4,No,2019,,7/1/2020,,In Use
+C9155,Epcoritamab-bysp,Epkinly,0.16mg,Immunotherapy,Monoclonal Antibody,"CD20, CD3",No,2023,,8/28/2023,12/7/2023,No Longer Used
+J9321,Epcoritamab-bysp,Epkinly,0.16mg,Immunotherapy,Monoclonal Antibody,"CD20, CD3",No,2023,,12/7/2023,,In Use
+J9358,Fam-trastuzumab deruxtecan-nxki,Enhertu,1mg,Immunotherapy,Drug Antibody Conjugate,"HER2, topoisomerase, tetrapeptide",No,2019,,7/1/2020,,In Use
+J9203,Gemtuzumab ozogamicin,Mylotarg,0.1 mg,Immunotherapy,Drug Antibody Conjugate,CD33,No,2000,,1/1/2018,,In Use
+J9300,Gemtuzumab ozogamicin,Mylotarg,5 mg,Immunotherapy,Drug Antibody Conjugate,CD33,No,2000,,1/1/2002,,In Use
+C9004,Gemtuzumab ozogamicin,Mylotarg,5 mg,Immunotherapy,Drug Antibody Conjugate,CD33,No,2000,,1/1/2004,12/31/2005,No Longer Used
+J9286,Glofitamab-gxbm,Columvi,2.5mg,Immunotherapy,Monoclonal Antibody,"CD20, CD3",No,2023,,12/7/2023,,In Use
+C9117,Ibritumomab tiuxetan,Zevalin,Per MCI,Immunotherapy,Radioimmunotherapy,CD20,No,2002,,10/1/2002,12/31/2002,No Longer Used
+C9118,Ibritumomab tiuxetan,Zevalin,Per MCI,Immunotherapy,Radioimmunotherapy,CD20,No,2002,,10/1/2002,12/31/2002,No Longer Used
+C9081,Idecabtagene vicleucel,Abecma,up to 460000000,Immunotherapy,CAR-T,BCMA,No,2021,,9/27/2021,1/26/2022,No Longer Used
+Q2055,Idecabtagene vicleucel,Abecma,460 million,Immunotherapy,CAR-T,BCMA,No,2021,,1/26/2022,,In Use
+NA,Imiquimod,Aldara,5%,Immunotherapy,Immunomodulator,Retinoic Acid Derivative,No,1997,,,,In Use
+J8499,Immunotherapy - non specific,"Prescription drug, oral, non chemotherapeutic, nos",NA,Immunotherapy,,,Yes,,,1/1/1995,,In Use
+S2107,Immunotherapy - non specific,Adoptive immunotherapy (ie development of specific anti-tumor reactivity),NA,Immunotherapy,,,No,,,4/1/2002,,In Use
+J3590,Immunotherapy - non specific,Unclassified biologics,NA,Immunotherapy,,,No,,,1/1/2003,,In Use
+S9338,Immunotherapy - non specific,"Home infusion therapy, immunotherapy",NA,Immunotherapy,,,No,,,1/1/2002,,In Use
+Not yet assigned,Inotuzumab Ozogamicin,Besponsa,0.9 mg,Immunotherapy,Drug Antibody Conjugate,CD22,No,2017,,,,In Use
+J9213,Interferon Alfa-2a,Roeferon- A,3 million units,Immunotherapy,Cytokine,Interferon,No,2002,,1/1/2009,,In Use
+J9214,Interferon Alfa-2b,Intron A,1 million units,Immunotherapy,Cytokine,Interferon,No,1986,,1/1/1993,,In Use
+J9216,Interferon Gamma-1b,Actimmune,3 million units,Immunotherapy,Cytokine,Interferon,No,1999,,1/1/2009,,In Use
+J9228,Ipilimumab,Yervoy,1mg,Immunotherapy,Checkpoint Inhibitor,CTLA-4,No,2011,,1/1/2012,,In Use
+C9284,Ipilimumab,Yervoy,1mg,Immunotherapy,Checkpoint Inhibitor,CTLA-4,No,2011,,7/1/2011,12/31/2011,No Longer Used
+J9227,Isatuximab-irtc,Sarclisa,10mg,Immunotherapy,Monoclonal Antibody,CD38,No,2020,,10/1/2020,,In Use
+NA,Lenalidomide,Revlimid,5 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,2005,,,,In Use
+NA,Lenalidomide,Revlimid,10 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,2005,,,,In Use
+S0177,Levamisole,Ergamisol,50 mg,Immunotherapy,Antiinfective Agent,antihelminitic,Yes,1990,2000,1/1/2002,,In Use
+Q2054,Lisocabtagene maraleucel,Breyanzi,,Immunotherapy,CAR-T,CD19,No,2021,,9/27/2021,,In Use
+C9076,Lisocabtagene maraleucel,Breyanzi,,Immunotherapy,CAR-T,CD19,No,2021,,7/23/2021,9/27/2021,No Longer Used
+C9084,Loncastuximab tesirine,Zylonta,0.1mg,Immunotherapy,Drug Antibody Conjugate,CD19,No,2021,,9/27/2021,3/25/2022,In Use
+J9359,Loncastuximab tesirine-lpyl,Zynlonta,0.075mg,Immunotherapy,Drug Antibody Conjugate,CD19,No,2021,,3/25/2022,,In Use
+J9353,Margetuximab-cmkb,Margenza,5mg,Immunotherapy,Monoclonal Antibody,HER2,No,2021,,7/23/2021,,In Use
+C9146,Mirvetuximab soravtansine,Elahere,1mg,Immunotherapy,Drug Antibody Conjugate,"FR-alpha, DM4",No,2022,,3/17/2023,7/11/2023,No Longer Used
+J9063,Mirvetuximab soravtansine,Elahere,1mg,Immunotherapy,Drug Antibody Conjugate,"FR-alpha, DM4",No,2022,,7/11/2023,,In Use
+J9204,Mogamulizumab-kpkc,Poteligeo,1mg,Immunotherapy,Monoclonal Antibody,CCR4,No,2018,,10/1/2019,,In Use
+J9350,Mosunetuzumab-axgb,Lunsumio,1mg,Immunotherapy,Monoclonal Antibody,"CD20, CD3",No,2022,,7/11/2023,,In Use
+J9313,Moxetumomab-pasudotox-tdfk,Lumoxiti,0.01mg,Immunotherapy,Drug Antibody Conjugate,CD22,No,2018,,10/1/2019,,In Use
+J9348,Naxitamab,Danyelva,1mg,Immunotherapy,Monoclonal Antibody,GD2,No,2020,,7/23/2021,,In Use
+J9295,Necitumumab,Portrazza,1 mg,Immunotherapy,Monoclonal Antibody,EGFR,No,2015,,1/1/2017,,In Use
+C9475,Necitumumab,Portrazza,1 mg,Immunotherapy,Monoclonal Antibody,EGFR,No,2015,,4/1/2016,,In Use
+C9453,Nivolumab,Opdivo,1 mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2014,,7/1/2015,,In Use
+J9299,Nivolumab,Opdivo,1 mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2014,,1/1/2016,,In Use
+J9298,Nivolumab & Relatlimab-rmbw,Opdualag,3mg/1mg,Immunotherapy,"Checkpoint Inhibitor, Monoclonal Antibody","PD-1, LAG3",No,2022,,9/27/2022,,In Use
+J9289,Nivolumab and hyaluronidase-nvhy,OPDIVO QVANTIG,2mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2025,,5/13/2025,,In Use
+C9169,Nogapendekin alfa inbakicept-pmln,Anktiva,1 microgram,Immunotherapy,Cytokine,"IL-15 (⍺,β,ɣ)",No,2024,,9/11/2024,3/26/2025,No Longer Used
+Q2058,Obecabtagene autoleucel,AUCATZYL,up to 400 million,Immunotherapy,CAR-T,CD-19,No,2024,,5/13/2025,,In Use
+C9301,Obecabtagene car pos t (Obecabtagene autoleucel),AUCATZYL,up to 400 million,Immunotherapy,CAR-T,CD-19,No,2024,,3/26/2025,5/13/2025,No Longer Used
+J9301,Obinutuzumab,Gazyva,10 mg,Immunotherapy,Monoclonal Antibody,CD20,No,2013,,1/1/2015,,In Use
+C9021,Obinutuzumab,Gazyva,10 mg,Immunotherapy,Monoclonal Antibody,CD20,No,2013,,4/4/2014,12/31/2014,No Longer Used
+C9260,Ofatumumab,Arzerra,10mg,Immunotherapy,Monoclonal Antibody,CD20,No,2009,,4/1/2010,12/31/2010,No Longer Used
+J9302,Ofatumumab,Arzerra,10mg,Immunotherapy,Monoclonal Antibody,CD20,No,2009,,1/1/2011,,In Use
+J9285,Olaratumab,Lartruvo,10 mg,Immunotherapy,Monoclonal Antibody,PDGFR,No,2016,,4/1/2017,,In Use
+C9235,Panitumumab,Vectibix,10mg,Immunotherapy,Monoclonal Antibody,EGFR,No,2006,,1/1/2007,12/31/2007,No Longer Used
+J9303,Panitumumab,Vectibix,10mg,Immunotherapy,Monoclonal Antibody,EGFR,No,2006,,1/1/2008,,In Use
+S0145,Pegintereferon Alfa-2a,Pegasys,180 mcg/mL,Immunotherapy,Cytokine,Interferon,No,2002,,7/1/2005,,In Use
+S0146,Peginterferon Alfa-2b,"Pegintron, Sylatron",20 mcg/mL,Immunotherapy,Cytokine,Interferon,No,2001,,7/1/2005,9/30/2010,No Longer Used
+C9027,Pembrolizumab,Keytruda,1 mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2014,,1/1/2015,12/31/2015,No Longer Used
+J9271,Pembrolizumab,Keytruda,1 mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2014,,1/1/2016,,In Use
+J9306,Pertuzumab,Perjeta,1 mg,Immunotherapy,Monoclonal Antibody,HER2,No,2012,,1/1/2014,,In Use
+C9292,Pertuzumab,Perjeta,10 mg,Immunotherapy,Monoclonal Antibody,HER2,No,2012,,10/1/2012,12/31/2013,No Longer Used
+J9316,"Pertuzumab, Trastuzumab, Hyaluronidase-zzxf",Phesgo,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2020,,1/1/2021,,In Use
+J9309,Polatuzumab Vedotin,Polivy,1mg,Immunotherapy,Drug Antibody Conjugate,CD79b,No,2019,,1/1/2020,,In Use
+NA,Pomalidomide,Pomalyst,2 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,2013,,,,In Use
+NA,Pomalidomide,Pomalyst,4 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,2013,,,,In Use
+NA,Pomalidomide,Pomalyst,1 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,2013,,,,In Use
+NA,Pomalidomide,Pomalyst,3 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,2013,,,,In Use
+C9025,Ramucirumab,Cyramza,5 mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2014,,10/1/2014,12/31/2015,No Longer Used
+J9308,Ramucirumab,Cyramza,5mg,Immunotherapy,Monoclonal Antibody,VEGFR,No,2014,,1/1/2016,,In Use
+J9345,Retifanlimab-dlwr,Zynyz,1mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2023,,8/28/2023,,In Use
+J9310,Rituximab,Rituxan,100 mg,Immunotherapy,Monoclonal Antibody,CD20,No,1997,,1/1/1999,,In Use
+J9311,Rituximab and Hyaluronidase,Rituxan Hycela,10mg,Immunotherapy,Monoclonal Antibody,CD20,No,2017,,1/1/2019,,In Use
+Q5115,Rituximab-abbs,Truxima,10mg,Immunotherapy,Monoclonal Antibody,CD20,No,2018,,7/1/2019,,In Use
+Q5123,Rituximab-arrx,Riabni,10mg,Immunotherapy,Monoclonal Antibody,CD20,No,2021,,7/23/2021,,In Use
+Q5119,Rituximab-pvvr,Ruxience,10mg,Immunotherapy,Monoclonal Antibody,CD20,No,2019,,7/1/2020,,In Use
+C9066,Sacituzumab govitecan-hziy,Trodelvy,10mg,Immunotherapy,Drug Antibody Conjugate,Trop-2,No,2020,,10/1/2020,1/1/2021,In Use
+J9317,Sacituzumab govitecan-hziy,Trodelvy,2.5mg,Immunotherapy,Drug Antibody Conjugate,Trop-2,No,2020,,1/1/2021,,In Use
+C9455,Siltuximab,Sylvant,10 mg,Immunotherapy,Monoclonal Antibody,IL-6,No,2014,,7/1/2015,12/31/2015,No Longer Used
+J2860,Siltuximab,Sylvant,10 mg,Immunotherapy,Monoclonal Antibody,IL-6,No,2014,,1/1/2016,,In Use
+Q2043,Sipuleucel-T,Provenge,1 dose = minimum of 50 million autologous cd54+ cells activated  with pap-gm-csf,Immunotherapy,Immunomodulator,Prostatic Acid Phosphatase,No,2010,,7/1/2011,,In Use
+C9273,Sipuleucel-T,Provenge,1 dose = minimum of 50 million autologous cd54+ cells activated  with pap-gm-csf,Immunotherapy,Immunomodulator,Prostatic Acid Phosphatase,No,2010,,10/1/2010,6/30/2011,No Longer Used
+C9070,Tafasitamab-cxix,Monjuvi,2mg,Immunotherapy,Monoclonal Antibody,CD19,,2020,,1/1/2021,4/1/2021,No Longer Used
+J9349,Tafasitamab-cxix,MONJUVI,2mg,Immunotherapy,Monoclonal Antibody,CD19,No,2020,,4/1/2021,,In Use
+J9269,Tagraxofusp-erzs,Elzonris,10mcg,Immunotherapy,Recombinant Fusion Protein,IL3/CD123,No,2018,,10/1/2019,,In Use
+J9325,Talimogene Laherparepvec,Imlygic,1 million plaque forming unites (PFU),Immunotherapy,Therapeutic Cancer Vaccine,Oncolytic Virus,No,2015,,1/1/2017,,In Use
+C9472,Talimogene Laherparepvec,Imlygic,1 million plaque forming unites (PFU),Immunotherapy,Therapeutic Cancer Vaccine,Oncolytic Virus,No,2015,,4/1/2016,,In Use
+C9163,Talquetamab,Talvey,0.25mg,Immunotherapy,T Cell Receptor (TCR),"GPRC5D, CD3",No,2023,,12/7/2023,4/17/2024,No Longer Used
+J9026,Tarlatamab-dlle,IMDELLTRA,1mg,Immunotherapy,T Cell Receptor (TCR),"DLL3, CD3",No,2024,,12/17/2024,,In Use
+C9170,"Tarlatamab-dlle, 1 mg",IMDELLTRA,1mg,Immunotherapy,T Cell Receptor (TCR),"DLL3, CD3",No,2024,,9/11/2024,12/17/2024,No Longer Used
+J9274,Tebentafusp-tebn,Kimmtrak,1mcg,Immunotherapy,T Cell Receptor (TCR),HLA-A*02:01,No,2022,,9/27/2022,,In Use
+C9095,Tebentafusp-tebn,Kimmtrak,1mcg,Immunotherapy,T Cell Receptor (TCR),HLA-A*02:01,No,2022,,3/25/2022,9/27/2022,No Longer Used
+J9380,Teclistamab cqyv,Tecvayli,0.5mg,Immunotherapy,Monoclonal Antibody,"BCMA, CD3",No,2022,,7/11/2023,,In Use
+C9148,Teclistamab-cqyv,Tecvayli,0.5mg,Immunotherapy,Monoclonal Antibody,"BCMA, CD3",No,2022,,3/17/2023,7/11/2023,No Longer Used
+NA,Thalidomide,Thalomid,50 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,1998,,,,In Use
+NA,Thalidomide,Thalomid,200 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,1998,,,,In Use
+NA,Thalidomide,Thalomid,100 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,1998,,,,In Use
+NA,Thalidomide,Thalomid,150 mg,Immunotherapy,Immunomodulator,Thalidomide Analog,Yes,1998,,,,In Use
+Not yet assigned,Tisagenlecleucel,Kymriah,consult labeling,Immunotherapy,CAR-T,CD19,No,2017,,,,In Use
+J9329,Tislelizumab-jsgr,Tevimbra,1mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2024,,9/11/2024,,In Use
+J9273,Tisotumab vedodin-tftv,Tivdak,1mg,Immunotherapy,Drug Antibody Conjugate,Tissue factor,No,2021,,3/25/2022,,In Use
+J3263,Toripalimab-tpzi,Loqtorzi,1mg,Immunotherapy,Checkpoint Inhibitor,PD-1,No,2023,,6/10/2024,,In Use
+A9534,Tositumomab,"Bexxar, Iodine i-131 Tositumomab, therapeutic",per MC,"Immunotherapy, Radiopharmaceutical",Radioimmunotherapy,CD20,No,2003,2014,7/1/2003,,In Use
+A9545,Tositumomab,"Bexxar, Iodine i-131 Tositumomab, therapeutic",Per treatment dose,"Immunotherapy, Radiopharmaceutical",Radioimmunotherapy,CD20,No,2003,2014,1/1/2006,,In Use
+J9355,Trastuzumab,Herceptin,10 mg,Immunotherapy,Monoclonal Antibody,HER2,No,1998,,1/1/2000,,In Use
+J9356,Trastuzumab and Hyaluronidase-oysk,Herceptin hylecta,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2019,,7/1/2019,,In Use
+Q5117,Trastuzumab-anns,Kanjinti,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2019,,10/1/2019,,In Use
+Q5114,Trastuzumab-dkst,Ogivri,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2017,,7/1/2019,,In Use
+Q5112,Trastuzumab-dttb,Ontruzant,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2021,,7/1/2019,,In Use
+Q5113,Trastuzumab-pkrb,Herzuma,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2018,,7/1/2019,,In Use
+Q5116,Trastuzumab-qyyp,Trazimera,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2020,,10/1/2019,,In Use
+Q5146,Trastuzumab-strf (hercessi),Hercessi,10mg,Immunotherapy,Monoclonal Antibody,HER2,No,2025,,1/1/2025,,In Use
+C9147,Tremelimumab-actl,Imjudo,1mg,Immunotherapy,Monoclonal Antibody,CTLA-4,No,2022,,3/17/2023,7/11/2023,No Longer Used
+J9347,Tremelimumab-actl,Imjudo,1mg,Immunotherapy,Monoclonal Antibody,CTLA-4,No,2022,,7/11/2023,,In Use
+J9275,Zanidatamab-hrii,ZIIHERA,2mg,Immunotherapy,Bispecific Antibody,HER2,No,2024,,5/13/2025,,In Use
+C9302,Zanidatamab-hrii,ZIIHERA,2mg,Immunotherapy,Bispecific Antibody,HER2,No,2024,,3/26/2025,5/13/2025,No Longer Used
+J9382,Zenocutuzumab-zbco,Bizengri,1mg,Immunotherapy,Bispecific Antibody,"HER2, HER3",No,2024,,5/13/2025,,In Use
+J1326,Zolbetuximab-clzb,Vyloy,2mg,Immunotherapy,Monoclonal Antibody,CLDN18.2,No,,2024,5/13/2025,,In Use
+C9303,Zolbetuximab-clzb,Vyloy,1mg,Immunotherapy,Monoclonal Antibody,CLDN18.2,No,2024,,3/26/2025,5/13/2025,No Longer Used
