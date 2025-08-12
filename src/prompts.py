@@ -1,5 +1,3 @@
-# src/prompts.py
-
 SYSTEM_IRAKI = """You are extracting structured clinical facts from free-text notes.
 
 Focus:

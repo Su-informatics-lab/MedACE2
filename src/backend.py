@@ -5,8 +5,6 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-# minimal openai‑compatible chat client
-
 
 class LLMClient:
     def __init__(
