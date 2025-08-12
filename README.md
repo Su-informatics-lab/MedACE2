@@ -1,6 +1,6 @@
 # MedACE: ICI and irAKI concept extraction
 
-ContextGem-based extractor that pulls immune checkpoint inhibitor (ICI) drug exposures and irAKI context from clinical 
+ContextGem-based extractor that pulls immune checkpoint inhibitor (ICI) drug exposures and AKI context from clinical 
 notes. Works with a local vLLM-hosted OSS-120B.
 
 ## Quick start
