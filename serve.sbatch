@@ -13,34 +13,43 @@
 
 set -euo pipefail
 
-# caches & image
+# ------------------------------------------------------------------------------
+# Caches & container image
+# ------------------------------------------------------------------------------
 export HF_HOME="$HOME/hf-cache"
 export IMG_DIR="$HOME/containers"
 export IMG_FILE="$IMG_DIR/vllm-gptoss.sif"
 mkdir -p "$HF_HOME" "$IMG_DIR" logs
 
-# per-job scratch
+# Per-job scratch
 export JOB_SCRATCH="$HOME/DelPHEA-irAKI/tmp/$SLURM_JOB_ID"
 mkdir -p "$JOB_SCRATCH"
 
-# cuda toolchain
+# CUDA toolchain
 export CUDA_HOME=/usr/local/cuda
 export PATH="$CUDA_HOME/bin:$PATH"
 
-# scale tp with allocation (fallback to 2)
+# Scale tensor parallel with allocation (fallback to 2)
 export TENSOR_PARALLEL="${SLURM_JOB_GPUS_PER_NODE:-2}"
 
-# hpc-friendly nccl setting (intra-node only)
+# NCCL (intra-node only)
 export NCCL_IB_DISABLE=1
 
-# choose a port (allow override: export PORT=8010)
+# Choose a port (allow override: export PORT=8010)
 export PORT="${PORT:-8000}"
 
-echo "starting gpt-oss-120b tp=${TENSOR_PARALLEL} | job ${SLURM_JOB_ID} on $(hostname -f)"
-echo "endpoint: http://$(hostname -f):${PORT}"
+# Model identifiers
+export HF_MODEL_ID="openai/gpt-oss-120b"
+export SERVED_NAME="gpt-oss-120b"   # <- alias that clients (LiteLLM/ContextGem) will use
+
+echo "starting ${HF_MODEL_ID} (served as ${SERVED_NAME}) tp=${TENSOR_PARALLEL} | job ${SLURM_JOB_ID} on $(hostname -f)"
+echo "endpoint: http://$(hostname -f):${PORT}/v1"
 date
 nvidia-smi || true
 
+# ------------------------------------------------------------------------------
+# Launch vLLM OpenAI-compatible server inside the container
+# ------------------------------------------------------------------------------
 apptainer exec --nv --cleanenv \
   --bind "$HF_HOME":/root/.cache/huggingface \
   --bind /mnt/shared/moduleapps/eb/CUDA/12.3.0:/mnt/shared/moduleapps/eb/CUDA/12.3.0 \
@@ -54,11 +63,17 @@ apptainer exec --nv --cleanenv \
     set -euo pipefail
     PYDEPS=/tmp/pydeps
     mkdir -p \"\$PYDEPS\"
+    # pin numpy<2.3 for numba compatibility (if present in image toolchain)
     python3 -m pip install --no-cache-dir --target \"\$PYDEPS\" 'numpy<2.3' >/tmp/pip.out 2>&1 || cat /tmp/pip.out
     export PYTHONPATH=\"\$PYDEPS:\${PYTHONPATH-}\"
     export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
+
+    # Start server:
+    # --served-model-name exposes an alias that clients will send as 'model'
+    # --max-model-len bumped to support no-chunk runs
     python3 -m vllm.entrypoints.openai.api_server \
-      --model openai/gpt-oss-120b \
+      --model \"$HF_MODEL_ID\" \
+      --served-model-name \"$SERVED_NAME\" \
       --tensor-parallel-size \"$TENSOR_PARALLEL\" \
       --gpu-memory-utilization 0.90 \
       --max-model-len 131072 \
