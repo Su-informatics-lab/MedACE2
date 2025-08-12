@@ -27,13 +27,17 @@ mkdir -p "$JOB_SCRATCH"
 export CUDA_HOME=/usr/local/cuda
 export PATH="$CUDA_HOME/bin:$PATH"
 
-# scale TP with allocation (fallback to 2)
+# scale tp with allocation (fallback to 2)
 export TENSOR_PARALLEL="${SLURM_JOB_GPUS_PER_NODE:-2}"
 
 # hpc-friendly nccl setting (intra-node only)
 export NCCL_IB_DISABLE=1
 
-echo "starting gpt-oss-120b tp=${TENSOR_PARALLEL} | job ${SLURM_JOB_ID} on $(hostname)"
+# choose a port (allow override: export PORT=8010)
+export PORT="${PORT:-8000}"
+
+echo "starting gpt-oss-120b tp=${TENSOR_PARALLEL} | job ${SLURM_JOB_ID} on $(hostname -f)"
+echo "endpoint: http://$(hostname -f):${PORT}"
 date
 nvidia-smi || true
 
@@ -58,7 +62,7 @@ apptainer exec --nv --cleanenv \
       --tensor-parallel-size \"$TENSOR_PARALLEL\" \
       --gpu-memory-utilization 0.90 \
       --max-model-len 8192 \
-      --host 127.0.0.1 --port 8000
+      --host 0.0.0.0 --port \"$PORT\"
   "
 
 echo "job finished at $(date)"
