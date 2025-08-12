@@ -4,13 +4,8 @@ MedACE | ContextGem note-level extraction for ICI drugs & irAKI context (Parquet
 Input parquet schema (DelPHEA v3):
   SERVICE_NAME, PHYSIOLOGIC_TIME, OBFUSCATED_GLOBAL_PERSON_ID, ENCOUNTER_ID, REPORT_TEXT
 
-Features:
-  - No chunking (assumes long-context model on your vLLM endpoint)
-  - Integer IDs; note_id = "<file_basename>:<row_index>"
-  - ContextGem JsonObjectConcepts with sentence-level references and built-in JSON validation/retries
-  - Optional ICI vocab to canonicalize and (optionally) filter to ICI-only drug mentions
-  - Optional RxNorm (RxNav) backfill for RxCUI
-  - Outputs: drug_mentions.parquet, note_concepts.parquet
+Todos:
+  - Change online rxnorm api to a local one.
 """
 
 from __future__ import annotations
@@ -30,8 +25,6 @@ from tqdm import tqdm
 from src.prompts import SYSTEM_IRAKI  # clinical steering text
 from src.rxnorm import resolve_rxcui
 from src.vocab import load_vocab, normalize_name
-
-# ------------------------------- helpers ---------------------------------
 
 
 def _normalize_model_id(m: str) -> str:
@@ -64,7 +57,8 @@ def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
 
 
 def _to_int64_from_str(series: pd.Series) -> pd.Series:
-    """Convert string-ish IDs like '1168...000000000000' or '1.168e+15' to pandas Int64 safely."""
+    """Convert string-ish IDs like '1168...000000000000' or '1.168e+15' to pandas Int64
+    safely."""
 
     def conv(x):
         if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -137,7 +131,7 @@ def _load_notes_delphea_v3(path: str) -> pd.DataFrame:
 def _concepts_for_note(
     allowed_names_for_hint: Optional[List[str]] = None,
 ) -> List[JsonObjectConcept]:
-    # Show a small, mixed list of synonyms/generics in the hint to bias extraction
+    # show a small, mixed list of synonyms/generics in the hint to bias extraction
     hint_list = (allowed_names_for_hint or [])[:30]
     allow_hint = (
         f" Only keep if the drug is an ICI (examples: {', '.join(hint_list)})."
@@ -205,9 +199,6 @@ def _flatten_items(concept: JsonObjectConcept) -> List[dict]:
     return out
 
 
-# ------------------------------- main -------------------------------------
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="MedACE irAKI concept extraction (ContextGem, parquet-only)"
@@ -230,6 +221,7 @@ def main() -> None:
         action="store_true",
         help="keep only drug exposures that map to vocab",
     )
+    # todo: will change to a local rxnav
     ap.add_argument(
         "--rxnorm-online",
         action="store_true",
@@ -244,7 +236,8 @@ def main() -> None:
     if args.debug:
         df = df.head(10).copy()
 
-    # vocab: use full synonym set for hinting; name_to_canonical keys are normalized terms (brands + generics)
+    # vocab: use full synonym set for hinting;
+    # name_to_canonical keys are normalized terms (brands + generics)
     vocab_path = args.drug_vocab or (
         os.path.join("resources", "ici_vocab.csv")
         if os.path.exists(os.path.join("resources", "ici_vocab.csv"))
