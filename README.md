@@ -12,25 +12,12 @@ export OPENAI_API_KEY=not-needed
 ```
 
 ```bash
-# serve model with an alias
-python -m vllm.entrypoints.openai.api_server \
-  --model openai/gpt-oss-120b \
-  --served-model-name gpt-oss-120b \
-  --max-model-len 131072 \
-  --host 0.0.0.0 --port 8000
+# init oss endpoint
+sbatch serve.sbatch
 ```
 
 ```bash
-# build ICI vocab once (resources contains files from data managers)
-python -m src.vocab \
-  --hcpcs "resources/Hcpcs Medication List-07-14-2025_07_52.csv" \
-  --ndc "resources/Published Ndc Package List-07-14-2025_07_49.csv" \
-  --regimens "resources/ICI_Regimens_PK_06_02_2025.xlsx" \
-  --out resources/ici_vocab.csv
-```
-
-```bash
-# run extractor
+# run pipeline
 python run.py \
   --notes `the parquet file hosting notes` \
   --outdir outputs/run1 \
