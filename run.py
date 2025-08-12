@@ -34,6 +34,11 @@ from src.vocab import load_vocab, normalize_name
 # ------------------------------- helpers ---------------------------------
 
 
+def _normalize_model_id(m: str) -> str:
+    m = (m or "").strip()
+    return m if "/" in m else f"openai/{m}"
+
+
 def _read_v3_parquet_coerced(path: str) -> pd.DataFrame:
     """
     Read DelPHEA v3 parquet and coerce types BEFORE pandas sees them:
@@ -252,13 +257,14 @@ def main() -> None:
     allowed_keys = set(vocab["name_to_canonical"].keys()) if vocab else set()
 
     llm = DocumentLLM(
-        model=args.model,
+        model=_normalize_model_id(args.model),
         api_base=args.backend_url,
+        api_key=os.getenv("OPENAI_API_KEY", "not-needed"),
         system_message=SYSTEM_IRAKI,
         temperature=0.1,
-        top_p=0.3,
+        top_p=1.0,
         timeout=120,
-        max_retries_invalid_data=3,  # ContextGem will retry malformed JSON
+        max_retries_invalid_data=3,
         output_language="en",
     )
 
