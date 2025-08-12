@@ -18,13 +18,12 @@ sbatch serve.sbatch
 
 ```bash
 # run pipeline
-python run.py \
-  --notes `the parquet file hosting notes` \
-  --outdir out \
-  --backend-url http://127.0.0.1:8000/v1 \
-  --model openai/gpt-oss-120b \
-  --drug-vocab "resources/ici_vocab.csv" \
-  --filter-ici
+python run.py --notes `path_to_notes_parquet` 
+```
+
+```bash
+# or only those from the drug list
+python run.py --notes `path_to_notes_parquet` --filter-ici
 ```
 
 ## Inputs
